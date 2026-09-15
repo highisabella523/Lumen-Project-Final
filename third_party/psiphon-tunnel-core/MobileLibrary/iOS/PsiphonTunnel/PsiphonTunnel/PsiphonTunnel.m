@@ -1,0 +1,2072 @@
+/*
+ * Copyright (c) 2016, Psiphon Inc.
+ * All rights reserved.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+#import <arpa/inet.h>
+#import <netinet/in.h>
+#import <net/if.h>
+#import <stdatomic.h>
+#import <sys/socket.h>
+#import <sys/un.h>
+#import <unistd.h>
+#import <CoreTelephony/CTTelephonyNetworkInfo.h>
+#import <CoreTelephony/CTCarrier.h>
+#import <Contacts/CNContactsUserDefaults.h>
+#import <Psi/Psi.h>
+#import "IPv6Synthesizer.h"
+#import "PsiphonProviderFeedbackHandlerShim.h"
+#import "PsiphonProviderNoticeHandlerShim.h"
+#import "PsiphonProviderNetwork.h"
+#import "PsiphonTunnel.h"
+#import "Backups.h"
+#import "json-framework/SBJson4.h"
+#import "NetworkID.h"
+#import "NetworkInterface.h"
+#import <resolv.h>
+#import <netdb.h>
+#import "IANATimeZoneCountry.h"
+#import "PsiphonClientPlatform.h"
+#import "Redactor.h"
+#import "ReachabilityProtocol.h"
+#import "Reachability+ReachabilityProtocol.h"
+#import "DefaultRouteMonitor.h"
+
+NSErrorDomain _Nonnull const PsiphonTunnelErrorDomain = @"com.psiphon3.ios.PsiphonTunnelErrorDomain";
+
+const BOOL UseIPv6Synthesizer = TRUE; // Must always use IPv6Synthesizer for iOS
+const BOOL UseHasIPv6RouteGetter = FALSE;
+
+/// Error codes which can returned by PsiphonTunnel
+typedef NS_ERROR_ENUM(PsiphonTunnelErrorDomain, PsiphonTunnelErrorCode) {
+
+    /*!
+     * Unknown error.
+     */
+    PsiphonTunnelErrorCodeUnknown = -1,
+
+    /*!
+     * An error was encountered obtaining the default library directory.
+     * @code
+     * // Underlying error will be set with more information
+     * [error.userInfo objectForKey:NSUnderlyingErrorKey]
+     * @endcode
+     */
+    PsiphonTunnelErrorCodeLibraryDirectoryError,
+
+    /*!
+     * An error was encountered with the provided config.
+     * @code
+     * // Localized description will be set with more information.
+     * // Underlying error may be set with more information.
+     * [error.userInfo objectForKey:NSUnderlyingErrorKey]
+     * error.localizedDescription
+     * @endcode
+     */
+    PsiphonTunnelErrorCodeConfigError,
+
+    /*!
+     * An error was encountered while generating the session ID.
+     * @code
+     * // Localized description will be set with more information.
+     * error.localizedDescription
+     * @endcode
+     */
+    PsiphonTunnelErrorCodeGenerateSessionIDError,
+
+    /*!
+     * An error was encountered while sending feedback.
+     * @code
+     * // Localized description and underlying error will be set with more information.
+     * [error.userInfo objectForKey:NSUnderlyingErrorKey]
+     * error.localizedDescription
+     * @endcode
+     */
+    PsiphonTunnelErrorCodeSendFeedbackError,
+};
+
+@interface PsiphonTunnel () <GoPsiPsiphonProvider>
+
+@property (weak) id <TunneledAppDelegate> tunneledAppDelegate;
+
+@property (atomic, strong) NSString *sessionID;
+
+@end
+
+@implementation PsiphonTunnel {
+    dispatch_queue_t workQueue;
+    dispatch_queue_t callbackQueue;
+    dispatch_semaphore_t noticeHandlingSemaphore;
+
+    _Atomic PsiphonConnectionState connectionState;
+
+    _Atomic NSInteger localSocksProxyPort;
+    _Atomic NSInteger localHttpProxyPort;
+
+    // Unix domain socket paths for the local proxies, when UseUnixDomainSockets
+    // is enabled. Guarded by @synchronized(self). Empty when not in use.
+    NSString *localSocksProxyUnixPath;
+    NSString *localHttpProxyUnixPath;
+
+    id<ReachabilityProtocol> reachability;
+    _Atomic NetworkReachability currentNetworkStatus;
+
+    BOOL tunnelWholeDevice;
+
+    _Atomic BOOL usingNoticeFiles;
+
+    // DNS
+    _Atomic BOOL useInitialDNS; // initialDNSCache validity flag.
+    NSString *initialDNSCache;  // This cache becomes void if internetReachabilityChanged is called.
+    
+    // Log timestamp formatter
+    // Note: NSDateFormatter is threadsafe.
+    NSDateFormatter *rfc3339Formatter;
+}
+
+- (id)init {
+    self = [super init];
+    if (self) {
+        [self initializeWithAppDelegate:nil];
+    }
+    return self;
+}
+
+- (id)initWithAppDelegate:(id<TunneledAppDelegate> _Nullable)appDelegate {
+    self = [super init];
+    if (self) {
+        [self initializeWithAppDelegate:appDelegate];
+    }
+    return self;
+}
+
+- (void)initializeWithAppDelegate:(id<TunneledAppDelegate> _Nullable)appDelegate {
+
+    // Set delegate first so it receives any initialization logs
+    self.tunneledAppDelegate = appDelegate;
+
+    // Must be initialized for logging
+    rfc3339Formatter = [PsiphonTunnel rfc3339Formatter];
+
+    self->workQueue = dispatch_queue_create("com.psiphon3.library.WorkQueue", DISPATCH_QUEUE_SERIAL);
+    self->callbackQueue = dispatch_queue_create("com.psiphon3.library.CallbackQueue", DISPATCH_QUEUE_SERIAL);
+    self->noticeHandlingSemaphore = dispatch_semaphore_create(1);
+
+    atomic_init(&self->connectionState, PsiphonConnectionStateDisconnected);
+    atomic_init(&self->localSocksProxyPort, 0);
+    atomic_init(&self->localHttpProxyPort, 0);
+    // reachability for the default route (destination 0.0.0.0/0)
+    if (@available(iOS 12.0, *)) {
+        void (^logNotice)(NSString * _Nonnull) = ^void(NSString * _Nonnull noticeJSON) {
+            [self logMessage:[@"DefaultRouteMonitor: " stringByAppendingString:noticeJSON]];
+        };
+        self->reachability = [[DefaultRouteMonitor alloc] initWithLogger:logNotice];
+    } else {
+        self->reachability = [Reachability reachabilityForInternetConnection];
+    }
+    atomic_init(&self->currentNetworkStatus, NetworkReachabilityNotReachable);
+    self->tunnelWholeDevice = FALSE;
+    atomic_init(&self->usingNoticeFiles, FALSE);
+
+    // Use the workaround, comma-delimited format required for gobind.
+    self->initialDNSCache = [[self getSystemDNSServers] componentsJoinedByString:@","];
+    atomic_init(&self->useInitialDNS, TRUE);
+}
+
+#pragma mark - PsiphonTunnel public methods
+
+// See comment in header
++ (NSURL*)defaultDataRootDirectoryWithError:(NSError**)err {
+    *err = nil;
+
+    NSURL *libraryURL = [PsiphonTunnel libraryURLWithError:err];
+    if (*err != nil) {
+        return nil;
+    }
+    return [libraryURL URLByAppendingPathComponent:@"com.psiphon3.ios.PsiphonTunnel.tunnel-core"
+                                       isDirectory:YES];
+}
+
+// See comment in header
++ (NSURL*)homepageFilePath:(NSURL*)dataRootDirectory {
+    return [NSURL fileURLWithPath:GoPsiHomepageFilePath(dataRootDirectory.path)
+                      isDirectory:FALSE];
+}
+
+// See comment in header
++ (NSURL*)noticesFilePath:(NSURL*)dataRootDirectory {
+    return [NSURL fileURLWithPath:GoPsiNoticesFilePath(dataRootDirectory.path)
+                      isDirectory:FALSE];
+}
+
+// See comment in header
++ (NSURL*)olderNoticesFilePath:(NSURL*)dataRootDirectory {
+    return [NSURL fileURLWithPath:GoPsiOldNoticesFilePath(dataRootDirectory.path)
+                      isDirectory:FALSE];
+}
+
+// See comment in header
++ (PsiphonTunnel * _Nonnull)newPsiphonTunnel:(id<TunneledAppDelegate> _Nonnull)tunneledAppDelegate {
+    @synchronized (PsiphonTunnel.self) {
+        // Only one PsiphonTunnel instance may exist at a time, as the
+        // underlying GoPsi implementation contains global state.
+        
+        static PsiphonTunnel *sharedInstance = nil;
+        static dispatch_once_t onceToken = 0;
+        dispatch_once(&onceToken, ^{
+            sharedInstance = [[self alloc] initWithAppDelegate:tunneledAppDelegate];
+        });
+
+        [sharedInstance stop];
+        sharedInstance.tunneledAppDelegate = tunneledAppDelegate;
+
+        return sharedInstance;
+    }
+}
+
+// See comment in header
+- (BOOL)start:(BOOL)ifNeeded {
+
+    // Set a new session ID, as this is a user-initiated session start.
+    NSError *err;
+    NSString *sessionID = [PsiphonTunnel generateSessionID:&err];
+    if (err != nil) {
+        [self logMessage:[NSString stringWithFormat:@"%@", err.localizedDescription]];
+        return FALSE;
+    }
+    self.sessionID = sessionID;
+
+    if (ifNeeded) {
+        return [self startIfNeeded];
+    }
+
+    return [self start];
+}
+
+// See comment in header
+- (void)reconnectWithConfig:(NSString * _Nullable) newSponsorID :(NSArray<NSString *> *_Nullable)newAuthorizations {
+
+    NSString *sponsorID = @"";
+    if (newSponsorID != nil) {
+        sponsorID = newSponsorID;
+    }
+
+    NSString *authorizationsList = @"";
+    if (newAuthorizations != nil) {
+        authorizationsList = [newAuthorizations componentsJoinedByString: @" "];
+    }
+
+    GoPsiSetDynamicConfig(sponsorID, authorizationsList);
+    GoPsiReconnectTunnel();
+}
+
+// See comment in header
+- (BOOL)stopAndReconnectWithCurrentSessionID {
+
+    // Proceed only if a session ID has alreaby been generated.
+    if (self.sessionID == nil) {
+        return FALSE;
+    }
+
+    return [self start];
+}
+
+// See comment in header
+- (void)appResumed {
+    GoPsiAppResumed();
+}
+
+// See comment in header
+- (void)dropPacketTunnelTraffic:(BOOL)drop {
+    GoPsiDropPacketTunnelTraffic(drop);
+}
+
+/*!
+ Start the tunnel. If the tunnel is already started it will be stopped first.
+ Assumes self.sessionID has been initialized -- i.e., assumes that
+ start:(BOOL)ifNeeded has been called at least once.
+ */
+- (BOOL)start {
+    @synchronized (PsiphonTunnel.self) {
+
+        [self stop];
+
+        [self logMessage:@"Starting Psiphon library"];
+
+        BOOL usingNoticeFiles = FALSE;
+
+        NSError *err;
+        NSString *configStr = [self getConfig:&usingNoticeFiles error:&err];
+        if (err != nil) {
+            [self logMessage:[NSString stringWithFormat:@"Error getting config: %@", err.localizedDescription]];
+            return FALSE;
+        } else if (configStr == nil) {
+            // Should never happen.
+            [self logMessage:@"Error getting config"];
+            return FALSE;
+        }
+
+        __block NSString *embeddedServerEntriesPath = @"";
+        __block NSString *embeddedServerEntries = @"";
+        
+        // getEmbeddedServerEntriesPath is optional in the protocol
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(getEmbeddedServerEntriesPath)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                embeddedServerEntriesPath = [self.tunneledAppDelegate getEmbeddedServerEntriesPath];
+                if (embeddedServerEntriesPath == nil) {
+                    // Don't pass NULL to go.
+                    embeddedServerEntriesPath = @"";
+                }
+            });
+        }
+
+        // If getEmbeddedServerEntriesPath returns an empty string,
+        // call getEmbeddedServerEntries
+        if ([embeddedServerEntriesPath length] == 0) {
+            // getEmbeddedServerEntries is optional in the protocol
+            if ([self.tunneledAppDelegate respondsToSelector:@selector(getEmbeddedServerEntries)]) {
+                dispatch_sync(self->callbackQueue, ^{
+                    embeddedServerEntries = [self.tunneledAppDelegate getEmbeddedServerEntries];
+                });
+
+                if (embeddedServerEntries == nil) {
+                    [self logMessage:@"Error getting embedded server entries from delegate"];
+                    return FALSE;
+                }
+            }
+        }
+
+        [self changeConnectionStateTo:PsiphonConnectionStateConnecting evenIfSameState:NO];
+
+        [self startInternetReachabilityMonitoring];
+
+        @try {
+            NSError *e = nil;
+
+            GoPsiStart(
+                configStr,
+                embeddedServerEntries,
+                embeddedServerEntriesPath,
+                self,
+                FALSE, // useDeviceBinder
+                UseIPv6Synthesizer,
+                UseHasIPv6RouteGetter,
+                &e);
+            
+            if (e != nil) {
+                [self logMessage:[NSString stringWithFormat: @"Psiphon library start failed: %@", e.localizedDescription]];
+                [self changeConnectionStateTo:PsiphonConnectionStateDisconnected evenIfSameState:NO];
+                return FALSE;
+            }
+
+            // self->usingNoticeFiles determines whether to invoke the
+            // onDiagnosticMessage callback for tunnel-core notices and
+            // whether to send logMessage messages to the notice files. Only
+            // enable once GoPsiStart had succeeded, at which point the notice
+            // files are initialized.
+            //
+            // Note that any tunnel-core notices received during GoPsiStart
+            // will invoke the onDiagnosticMessage callback.
+            if (usingNoticeFiles) {
+                atomic_store(&self->usingNoticeFiles, TRUE);
+            }
+        }
+        @catch(NSException *exception) {
+            [self logMessage:[NSString stringWithFormat: @"Failed to start Psiphon library: %@", exception.reason]];
+            [self changeConnectionStateTo:PsiphonConnectionStateDisconnected evenIfSameState:NO];
+            return FALSE;
+        }
+
+        [self logMessage:@"Psiphon library started"];
+        
+        return TRUE;
+    }
+}
+
+/*!
+ Start the tunnel if it's not already started.
+ */
+- (BOOL)startIfNeeded {
+    PsiphonConnectionState connState = [self getConnectionState];
+
+    if (connState == PsiphonConnectionStateDisconnected) {
+        return [self start];
+    }
+
+    // We have found that on iOS, the local proxies will get killed before the
+    // tunnel gets disconnected (or before it realizes it's dead). So we need to
+    // start if we either in a disconnected state or if our local proxies are dead.
+    BOOL needRestart = NO;
+
+    // Check SOCKS proxy first
+    // Note that check is skipped if proxy is not running, i.e. proxy port == 0
+    NSInteger socksProxyPort = [self getLocalSocksProxyPort];
+    needRestart = (socksProxyPort != 0 && ![self isLocalProxyAliveAtPort:socksProxyPort]);
+
+    // If SOCKS proxy is alive or not running then perform the same check for HTTP proxy
+    if(!needRestart) {
+        NSInteger httpProxyPort = [self getLocalHttpProxyPort];
+        needRestart = (httpProxyPort != 0 && ![self isLocalProxyAliveAtPort:httpProxyPort]);
+    }
+
+    // In UseUnixDomainSockets mode the proxies listen on Unix domain sockets
+    // rather than ports, so apply the same liveness check to the socket paths.
+    // Note that check is skipped if a path is not set, i.e. proxy not running.
+    NSString *socksUnixPath;
+    NSString *httpUnixPath;
+    @synchronized (self) {
+        socksUnixPath = self->localSocksProxyUnixPath;
+        httpUnixPath = self->localHttpProxyUnixPath;
+    }
+    if (!needRestart && socksUnixPath.length != 0) {
+        needRestart = ![self isLocalProxyAliveAtUnixPath:socksUnixPath];
+    }
+    if (!needRestart && httpUnixPath.length != 0) {
+        needRestart = ![self isLocalProxyAliveAtUnixPath:httpUnixPath];
+    }
+
+    if (needRestart) {
+        return [self start];
+    }
+
+    // Otherwise we're already connected, so let the app know via the same signaling
+    // that we'd use if we were doing a connection sequence.
+    [self changeConnectionStateTo:connState evenIfSameState:YES];
+
+    return TRUE;
+}
+
+// See comment in header.
+- (void)stop {
+    @synchronized (PsiphonTunnel.self) {
+        [self logMessage: @"Stopping Psiphon library"];
+
+        [self stopInternetReachabilityMonitoring];
+
+        GoPsiStop();
+        
+        [self logMessage: @"Psiphon library stopped"];
+
+        atomic_store(&self->localSocksProxyPort, 0);
+        atomic_store(&self->localHttpProxyPort, 0);
+
+        @synchronized (self) {
+            self->localSocksProxyUnixPath = nil;
+            self->localHttpProxyUnixPath = nil;
+        }
+
+        [self changeConnectionStateTo:PsiphonConnectionStateDisconnected evenIfSameState:NO];
+    }
+}
+
+// See comment in header.
+- (PsiphonConnectionState)getConnectionState {
+    return atomic_load(&self->connectionState);
+}
+
+- (BOOL)getNetworkReachabilityStatus:(NetworkReachability * _Nonnull)status {
+    PsiphonConnectionState connState = [self getConnectionState];
+    if (connState == PsiphonConnectionStateDisconnected) {
+        return FALSE;
+    }
+    (*status) = atomic_load(&self->currentNetworkStatus);
+    return TRUE;
+}
+
+// See comment in header.
+- (NSInteger)getLocalSocksProxyPort {
+    return atomic_load(&self->localSocksProxyPort);
+}
+
+// See comment in header.
+- (NSInteger)getLocalHttpProxyPort {
+    return atomic_load(&self->localHttpProxyPort);
+}
+
+// See comment in header.
+- (long)getPacketTunnelMTU {
+    return GoPsiGetPacketTunnelMTU();
+}
+
+// See comment in header.
+- (BOOL)importPushPayload:(NSData * _Nonnull)payload {
+    return GoPsiImportPushPayload(payload);
+}
+
+// See comment in header.
++ (NSString * _Nonnull)getBuildInfo {
+    return GoPsiGetBuildInfo();
+}
+
+- (NSString * _Nonnull)getAccessToken {
+    return GoPsiGetDSLAccessToken();
+}
+
+#pragma mark - Profiling utilities
+
+- (void)writeRuntimeProfilesTo:(NSString * _Nonnull)outputDirectory withCPUSampleDurationSeconds:(int)cpuSampleDurationSeconds withBlockSampleDurationSeconds:(int)blockSampleDurationSeconds {
+    GoPsiWriteRuntimeProfiles(outputDirectory, cpuSampleDurationSeconds, blockSampleDurationSeconds);
+}
+
+#pragma mark - PsiphonTunnel logic implementation methods (private)
+
++ (NSURL*)libraryURLWithError:(NSError**)err {
+
+    *err = nil;
+
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+
+    NSError *urlForDirectoryError;
+    NSURL *libraryURL = [fileManager URLForDirectory:NSLibraryDirectory
+                                            inDomain:NSUserDomainMask
+                                   appropriateForURL:nil
+                                              create:NO
+                                               error:&urlForDirectoryError];
+
+    if (urlForDirectoryError != nil) {
+        *err = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                   code:PsiphonTunnelErrorCodeLibraryDirectoryError
+                               userInfo:@{NSUnderlyingErrorKey:urlForDirectoryError}];
+    }
+
+    return libraryURL;
+}
+
+/*!
+ Build the config string for the tunnel.
+ @returns String containing the JSON config. `nil` on error.
+ */
+- (NSString * _Nullable)getConfig:(BOOL * _Nonnull)usingNoticeFiles
+                            error:(NSError *_Nullable *_Nonnull)outError {
+
+    *outError = nil;
+
+    // tunneledAppDelegate is a weak reference, so check it.
+    if (self.tunneledAppDelegate == nil) {
+        [self logMessage:@"tunneledApp delegate lost"];
+        return nil;
+    }
+
+    __block id configObject = nil;
+    dispatch_sync(self->callbackQueue, ^{
+        configObject = [self.tunneledAppDelegate getPsiphonConfig];
+    });
+
+    __weak PsiphonTunnel *weakSelf = self;
+    void (^logMessage)(NSString * _Nonnull) = ^void(NSString * _Nonnull message) {
+        __strong PsiphonTunnel *strongSelf = weakSelf;
+        if (strongSelf != nil) {
+            [strongSelf logMessage:message];
+        }
+    };
+
+    if (configObject == nil) {
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:@"Error config object nil"}];
+        return nil;
+    }
+
+    NSError *err;
+    NSString *psiphonConfig = [PsiphonTunnel buildPsiphonConfig:configObject
+                                              tunnelWholeDevice:&self->tunnelWholeDevice
+                                               usingNoticeFiles:usingNoticeFiles
+                                                      sessionID:self.sessionID
+                                                     logMessage:logMessage
+                                                          error:&err];
+    if (err != nil) {
+        *outError = err;
+        return nil;
+    }
+
+    return psiphonConfig;
+}
+
++ (NSString * _Nullable)buildPsiphonConfig:(id _Nonnull)configObject
+                        tunnelWholeDevice:(BOOL * _Nonnull)tunnelWholeDevice
+                          usingNoticeFiles:(BOOL * _Nonnull)usingNoticeFiles
+                                 sessionID:(NSString * _Nonnull)sessionID
+                                logMessage:(void (^)(NSString * _Nonnull))logMessage
+                                     error:(NSError *_Nullable *_Nonnull)outError {
+
+    *outError = nil;
+    
+    __block NSDictionary *initialConfig = nil;
+    
+    if ([configObject isKindOfClass:[NSString class]]) {
+        
+        id block = ^(id obj, BOOL *ignored) {
+            if (ignored == nil || *ignored == YES) {
+                return;
+            }
+            initialConfig = (NSDictionary *)obj;
+        };
+        
+        id eh = ^(NSError *err) {
+            initialConfig = nil;
+            NSString *s = [NSString stringWithFormat:@"Config JSON parse failed: %@", err.description];
+            *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                            code:PsiphonTunnelErrorCodeConfigError
+                                        userInfo:@{NSLocalizedDescriptionKey:s}];
+        };
+        
+        id parser = [SBJson4Parser parserWithBlock:block allowMultiRoot:NO unwrapRootArray:NO errorHandler:eh];
+        [parser parse:[(NSString *)configObject dataUsingEncoding:NSUTF8StringEncoding]];
+        
+    } else if ([configObject isKindOfClass:[NSDictionary class]]) {
+        
+        initialConfig = (NSDictionary *)configObject;
+        
+    } else {
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"configObject should reference either an "
+                                                    "NSDictionary object or an NSString object"}];
+        return nil;
+    }
+
+    if (*outError != nil) {
+        return nil;
+    } else if (initialConfig == nil) {
+        // Should never happen.
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:@"initialConfig nil"}];
+        return nil;
+    }
+
+    NSMutableDictionary *config = [NSMutableDictionary dictionaryWithDictionary:initialConfig];
+    
+    //
+    // Check for required values
+    //
+    
+    if (config[@"PropagationChannelId"] == nil) {
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"Config missing PropagationChannelId"}];
+        return nil;
+    }
+
+    if (config[@"SponsorId"] == nil) {
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"Config missing SponsorId"}];
+        return nil;
+    }
+    
+    //
+    // Fill in optional config values.
+    //
+
+    if (config[@"EstablishTunnelTimeoutSeconds"] == nil) {
+        // If not otherwise set, we want no tunnel establishment timeout
+        config[@"EstablishTunnelTimeoutSeconds"] = [NSNumber numberWithInt:0];
+    }
+
+    //
+    // DataRootDirectory
+    //
+
+    NSError *err;
+
+    // Some clients will have a data directory that they'd prefer the Psiphon
+    // library use, but if not we'll default to the user Library directory.
+    //
+    // Note: this deprecates the "DataStoreDirectory" config field.
+    NSURL *defaultDataRootDirectoryURL = [PsiphonTunnel defaultDataRootDirectoryWithError:&err];
+    if (err != nil) {
+        NSString *s = [NSString stringWithFormat:@"Unable to get defaultDataRootDirectoryURL: %@",
+                       [Redactor errorDescription:err]];
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:s}];
+        return nil;
+    }
+
+    if (config[@"DataRootDirectory"] == nil) {
+
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+
+        [fileManager createDirectoryAtURL:defaultDataRootDirectoryURL
+              withIntermediateDirectories:YES
+                               attributes:nil
+                                    error:&err];
+        if (err != nil) {
+            NSString *s = [NSString stringWithFormat:@"Unable to create defaultRootDirectoryURL: %@",
+                           [Redactor errorDescription:err]];
+            *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                            code:PsiphonTunnelErrorCodeConfigError
+                                        userInfo:@{NSLocalizedDescriptionKey:s}];
+            return nil;
+        }
+
+        config[@"DataRootDirectory"] = defaultDataRootDirectoryURL.path;
+    }
+    else {
+        logMessage(@"DataRootDirectory overridden");
+    }
+
+    // Ensure that the configured data root directory is not backed up to iCloud or iTunes.
+    NSURL *dataRootDirectory = [NSURL fileURLWithPath:config[@"DataRootDirectory"]];
+
+    BOOL succeeded = [Backups excludeFileFromBackup:dataRootDirectory.path err:&err];
+    if (!succeeded) {
+        logMessage([NSString stringWithFormat:@"Failed to exclude data root directory from backup: %@", [Redactor errorDescription:err]]);
+    } else {
+        logMessage(@"Excluded data root directory from backup");
+    }
+
+    //
+    // DataStoreDirectory
+    //
+
+    NSURL *libraryURL = [PsiphonTunnel libraryURLWithError:&err];
+    if (err != nil) {
+        NSString *s = [NSString stringWithFormat:@"Unable to get Library URL: %@", [Redactor errorDescription:err]];
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:s}];
+        return nil;
+    }
+
+    // Some clients will have a data directory that they'd prefer the Psiphon
+    // library use, but if not we'll default to the user Library directory.
+    //
+    // Deprecated:
+    // Tunnel core now stores its files under a single data root directory, which can be configured.
+    // Setting the datastore directory allows tunnel core to migrate datastore files from the old
+    // directory structure to the new one; this can be done with either the deprecated config field
+    // "DataStoreDirectory" or the more explict new field "MigrateDataStoreDirectory".
+    NSURL *defaultDataStoreDirectoryURL = [libraryURL URLByAppendingPathComponent:@"datastore"
+                                                                      isDirectory:YES];
+    
+    if (defaultDataStoreDirectoryURL == nil) {
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:@"Unable to create defaultDataStoreDirectoryURL"}];
+        return nil;
+    }
+    
+    if (config[@"DataStoreDirectory"] == nil) {
+        config[@"MigrateDataStoreDirectory"] = defaultDataStoreDirectoryURL.path;
+    }
+    else {
+        logMessage(@"DataStoreDirectory overridden from default");
+    }
+
+    //
+    // Remote Server List
+    //
+
+    // Deprecated:
+    // Tunnel core now stores its files under a single data root directory, which can be configured.
+    // Setting the remote server list download filename allows tunnel core to migrate remote server
+    // list download files to the new directory structure under the data root directory; this can be
+    // done with either the deprecated config field "RemoteServerListDownloadFilename" or the more
+    // explict new field "MigrateRemoteServerListDownloadFilename".
+    NSString *defaultRemoteServerListFilename = [[libraryURL URLByAppendingPathComponent:@"remote_server_list" isDirectory:NO] path];
+    if (defaultRemoteServerListFilename == nil) {
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:@"Unable to create defaultRemoteServerListFilename"}];
+        return nil;
+    }
+    
+    if (config[@"RemoteServerListDownloadFilename"] == nil) {
+        config[@"MigrateRemoteServerListDownloadFilename"] = defaultRemoteServerListFilename;
+    }
+    else {
+        logMessage(@"RemoteServerListDownloadFilename overridden from default");
+    }
+    
+    // If RemoteServerListUrl/RemoteServerListURLs and RemoteServerListSignaturePublicKey
+    // are absent, we'll just leave them out, but we'll log about it.
+    if ((config[@"RemoteServerListUrl"] == nil &&
+         config[@"RemoteServerListURLs"] == nil &&
+         config[@"AdditionalParameters"] == nil) ||
+        config[@"RemoteServerListSignaturePublicKey"] == nil) {
+        logMessage(@"Remote server list functionality will be disabled");
+    }
+    
+    //
+    // Obfuscated Server List
+    //
+
+    // Deprecated:
+    // Tunnel core now stores its files under a single data root directory, which can be configured.
+    // Setting the obfuscated server list download directory allows tunnel core to migrate
+    // obfuscated server list files from the old directory structure to the new one; this can be
+    // done with either the deprecated config field "ObfuscatedServerListDownloadDirectory" or the
+    // more explict new field "MigrateObfuscatedServerListDownloadDirectory".
+    NSURL *defaultOSLDirectoryURL = [libraryURL URLByAppendingPathComponent:@"osl" isDirectory:YES];
+    if (defaultOSLDirectoryURL == nil) {
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:@"Unable to create defaultOSLDirectory"}];
+        return nil;
+    }
+    if (config[@"ObfuscatedServerListDownloadDirectory"] == nil) {
+        config[@"MigrateObfuscatedServerListDownloadDirectory"] = defaultOSLDirectoryURL.path;
+    }
+    else {
+        logMessage(@"ObfuscatedServerListDownloadDirectory overridden from default");
+    }
+    
+    // If ObfuscatedServerListRootURL/ObfuscatedServerListRootURLs is absent,
+    // we'll leave it out, but log the absence.
+    if (config[@"ObfuscatedServerListRootURL"] == nil &&
+        config[@"ObfuscatedServerListRootURLs"] == nil &&
+        config[@"AdditionalParameters"] == nil) {
+
+        logMessage(@"Obfuscated server list functionality will be disabled");
+    }
+
+    //
+    // Tunnel Whole Device (defaults to not whole device)
+    //
+
+    // We'll record our state about what mode we're in.
+    *tunnelWholeDevice = (config[@"PacketTunnelTunFileDescriptor"] != nil);
+
+    // Optional fields not being altered. If not set, their defaults will be used:
+    // * LocalSocksProxyPort
+    // * LocalHttpProxyPort
+    // * UpstreamProxyUrl
+    // * EmitDiagnosticNotices
+    // * EgressRegion
+    // * timeout fields
+    
+    //
+    // Fill in the rest of the values.
+    //
+    
+    config[@"ClientPlatform"] = [PsiphonClientPlatform getClientPlatform];
+        
+    config[@"DeviceRegion"] = [PsiphonTunnel getDeviceRegion];
+    
+    // We don't support upgrade downloading
+    config[@"UpgradeDownloadURLs"] = nil;
+    config[@"UpgradeDownloadUrl"] = nil;
+    config[@"UpgradeDownloadClientVersionHeader"] = nil;
+    config[@"UpgradeDownloadFilename"] = nil;
+
+    config[@"SessionID"] = sessionID;
+
+    // Indicate whether UseNoticeFiles is set
+    *usingNoticeFiles = (config[@"UseNoticeFiles"] != nil);
+
+    // For iOS VPN, set VPN client feature while preserving any present feature names
+    if (*tunnelWholeDevice == TRUE) {
+        id oldClientFeatures = config[@"ClientFeatures"];
+        NSString *vpnClientFeature = @"VPN";
+        NSMutableArray<NSString*> *clientFeatures;
+
+        if (oldClientFeatures != nil) {
+            if (![oldClientFeatures isKindOfClass:[NSArray<NSString*> class]]) {
+                *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                                code:PsiphonTunnelErrorCodeConfigError
+                                            userInfo:@{NSLocalizedDescriptionKey:@"ClientFeatures not NSArray<String*>"}];
+                return nil;
+            }
+            clientFeatures = [NSMutableArray arrayWithArray:oldClientFeatures];
+            if (![clientFeatures containsObject:vpnClientFeature]) {
+                [clientFeatures addObject:vpnClientFeature];
+            }
+        } else {
+            clientFeatures = [NSMutableArray arrayWithObject:vpnClientFeature];
+        }
+        config[@"ClientFeatures"] = clientFeatures;
+
+    }
+
+    // Where required, enable DisableSystemRootCAs, which overrides
+    // the TransferURL.SkipVerify configuration for remote server list
+    // downloads and feedback uploads. Both of these operations have
+    // additional security at the payload level. Verifying TLS certificates
+    // is preferred, as an additional security and circumvention layer, but
+    // is not possible in these circumstances:
+    // - On iOS < 12, Go 1.18+ does not support loading the system root CAs.
+    // - On iOS < 15 and in the VPN extension, loading the system root CAs
+    //   exceeds the extension memory limit.
+
+    BOOL alwaysSkipVerify = TRUE;
+    if (@available(iOS 15.0, *)) {
+        alwaysSkipVerify = FALSE;
+    } else if (@available(iOS 12.0, *)) {
+        alwaysSkipVerify = *tunnelWholeDevice;
+    }
+    config[@"DisableSystemRootCAs"] = @(alwaysSkipVerify);
+
+    NSString *finalConfigStr = [[[SBJson4Writer alloc] init] stringWithObject:config];
+    
+    if (finalConfigStr == nil) {
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeConfigError
+                                    userInfo:@{NSLocalizedDescriptionKey:@"Failed to convert config to JSON string"}];
+        return nil;
+    }
+
+    return finalConfigStr;
+}
+
+/*!
+ Process notices from tunnel core.
+ @param noticeJSON  The notice data, JSON encoded.
+ */
+- (void)handlePsiphonNotice:(NSString * _Nonnull)noticeJSON {
+
+    BOOL diagnostic = TRUE;
+    BOOL internalError = FALSE;
+    
+    __block NSDictionary *notice = nil;
+    id block = ^(id obj, BOOL *ignored) {
+        if (ignored == nil || *ignored == YES) {
+            return;
+        }
+        notice = (NSDictionary *)obj;
+    };
+    
+    id eh = ^(NSError *err) {
+        notice = nil;
+        [self logMessage:[NSString stringWithFormat: @"Notice JSON parse failed: %@", err.description]];
+    };
+    
+    id parser = [SBJson4Parser parserWithBlock:block allowMultiRoot:NO unwrapRootArray:NO errorHandler:eh];
+    [parser parse:[noticeJSON dataUsingEncoding:NSUTF8StringEncoding]];
+    
+    if (notice == nil) {
+        return;
+    }
+
+    NSString *noticeType = notice[@"noticeType"];
+    if (noticeType == nil) {
+        [self logMessage:@"Notice missing noticeType"];
+        return;
+    }
+    
+    if ([noticeType isEqualToString:@"Tunnels"]) {
+        id count = [notice valueForKeyPath:@"data.count"];
+        if (![count isKindOfClass:[NSNumber class]]) {
+            [self logMessage:[NSString stringWithFormat: @"Tunnels notice missing data.count: %@", noticeJSON]];
+            return;
+        }
+
+        if ([count integerValue] == 0) {
+            [self changeConnectionStateTo:PsiphonConnectionStateConnecting evenIfSameState:NO];
+        } else if ([count integerValue] == 1) {
+            [self changeConnectionStateTo:PsiphonConnectionStateConnected evenIfSameState:NO];
+        }
+        // count > 1 is an additional multi-tunnel establishment, and not reported.
+    }
+    else if ([noticeType isEqualToString:@"Exiting"]) {
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onExiting)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onExiting];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"AvailableEgressRegions"]) {
+        id regions = [notice valueForKeyPath:@"data.regions"];
+        if (![regions isKindOfClass:[NSArray class]]) {
+            [self logMessage:[NSString stringWithFormat: @"AvailableEgressRegions notice missing data.regions: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onAvailableEgressRegions:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onAvailableEgressRegions:regions];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"SocksProxyPortInUse"]) {
+        id port = [notice valueForKeyPath:@"data.port"];
+        if (![port isKindOfClass:[NSNumber class]]) {
+            [self logMessage:[NSString stringWithFormat: @"SocksProxyPortInUse notice missing data.port: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onSocksProxyPortInUse:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onSocksProxyPortInUse:[port integerValue]];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"HttpProxyPortInUse"]) {
+        id port = [notice valueForKeyPath:@"data.port"];
+        if (![port isKindOfClass:[NSNumber class]]) {
+            [self logMessage:[NSString stringWithFormat: @"HttpProxyPortInUse notice missing data.port: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onHttpProxyPortInUse:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onHttpProxyPortInUse:[port integerValue]];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ListeningSocksProxyPort"]) {
+        id port = [notice valueForKeyPath:@"data.port"];
+        if (![port isKindOfClass:[NSNumber class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ListeningSocksProxyPort notice missing data.port: %@", noticeJSON]];
+            return;
+        }
+
+        NSInteger portInt = [port integerValue];
+
+        atomic_store(&self->localSocksProxyPort, portInt);
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onListeningSocksProxyPort:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onListeningSocksProxyPort:portInt];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ListeningHttpProxyPort"]) {
+        id port = [notice valueForKeyPath:@"data.port"];
+        if (![port isKindOfClass:[NSNumber class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ListeningHttpProxyPort notice missing data.port: %@", noticeJSON]];
+            return;
+        }
+
+        NSInteger portInt = [port integerValue];
+
+        atomic_store(&self->localHttpProxyPort, portInt);
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onListeningHttpProxyPort:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onListeningHttpProxyPort:portInt];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ListeningSocksProxyUnixPath"]) {
+        id path = [notice valueForKeyPath:@"data.path"];
+        if (![path isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ListeningSocksProxyUnixPath notice missing data.path: %@", noticeJSON]];
+            return;
+        }
+
+        @synchronized (self) {
+            self->localSocksProxyUnixPath = (NSString *)path;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onListeningSocksProxyUnixPath:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onListeningSocksProxyUnixPath:(NSString *)path];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ListeningHttpProxyUnixPath"]) {
+        id path = [notice valueForKeyPath:@"data.path"];
+        if (![path isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ListeningHttpProxyUnixPath notice missing data.path: %@", noticeJSON]];
+            return;
+        }
+
+        @synchronized (self) {
+            self->localHttpProxyUnixPath = (NSString *)path;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onListeningHttpProxyUnixPath:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onListeningHttpProxyUnixPath:(NSString *)path];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"UpstreamProxyError"]) {
+        id message = [notice valueForKeyPath:@"data.message"];
+        if (![message isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"UpstreamProxyError notice missing data.message: %@", noticeJSON]];
+            return;
+        }
+        
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onUpstreamProxyError:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onUpstreamProxyError:message];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ClientUpgradeDownloaded"]) {
+        // We don't support upgrade downloading
+    }
+    else if ([noticeType isEqualToString:@"ClientIsLatestVersion"]) {
+        // We don't support upgrade downloading
+    }
+    else if ([noticeType isEqualToString:@"Homepage"]) {
+        id url = [notice valueForKeyPath:@"data.url"];
+        if (![url isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"Homepage notice missing data.url: %@", noticeJSON]];
+            return;
+        }
+        
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onHomepage:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onHomepage:url];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ClientRegion"]) {
+        id region = [notice valueForKeyPath:@"data.region"];
+        if (![region isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ClientRegion notice missing data.region: %@", noticeJSON]];
+            return;
+        }
+        
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onClientRegion:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onClientRegion:region];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ClientAddress"]) {
+        diagnostic = FALSE;
+
+        id address = [notice valueForKeyPath:@"data.address"];
+        if (![address isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ClientAddress notice missing data.address: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onClientAddress:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onClientAddress:address];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"SplitTunnelRegions"]) {
+        id regions = [notice valueForKeyPath:@"data.regions"];
+        if (![regions isKindOfClass:[NSArray class]]) {
+            [self logMessage:[NSString stringWithFormat: @"SplitTunnelRegions notice missing data.regions: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onSplitTunnelRegions:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onSplitTunnelRegions:regions];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"Untunneled"]) {
+        diagnostic = FALSE;
+
+        id address = [notice valueForKeyPath:@"data.address"];
+        if (![address isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"Untunneled notice missing data.address: %@", noticeJSON]];
+            return;
+        }
+        
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onUntunneledAddress:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onUntunneledAddress:address];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"BytesTransferred"]) {
+        diagnostic = FALSE;
+        
+        id sent = [notice valueForKeyPath:@"data.sent"];
+        id received = [notice valueForKeyPath:@"data.received"];
+        if (![sent isKindOfClass:[NSNumber class]] || ![received isKindOfClass:[NSNumber class]]) {
+            [self logMessage:[NSString stringWithFormat: @"BytesTransferred notice missing data.sent or data.received: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onBytesTransferred::)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onBytesTransferred:[sent longLongValue]:[received longLongValue]];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ServerTimestamp"]) {
+        id timestamp = [notice valueForKeyPath:@"data.timestamp"];
+        if (![timestamp isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ServerTimestamp notice missing data.timestamp: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onServerTimestamp:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onServerTimestamp:timestamp];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ActiveAuthorizationIDs"]) {
+        id authorizations = [notice valueForKeyPath:@"data.IDs"];
+        if (![authorizations isKindOfClass:[NSArray class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ActiveAuthorizationIDs notice missing data.IDs: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onActiveAuthorizationIDs:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onActiveAuthorizationIDs:authorizations];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"TrafficRateLimits"]) {
+        id upstreamBytesPerSecond = [notice valueForKeyPath:@"data.upstreamBytesPerSecond"];
+        id downstreamBytesPerSecond = [notice valueForKeyPath:@"data.downstreamBytesPerSecond"];
+        if (![upstreamBytesPerSecond isKindOfClass:[NSNumber class]] || ![downstreamBytesPerSecond isKindOfClass:[NSNumber class]]) {
+            [self logMessage:[NSString stringWithFormat: @"TrafficRateLimits notice missing data.upstreamBytesPerSecond or data.downstreamBytesPerSecond: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onTrafficRateLimits::)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onTrafficRateLimits:[upstreamBytesPerSecond longLongValue]:[downstreamBytesPerSecond longLongValue]];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ServerAlert"]) {
+        id reason = [notice valueForKeyPath:@"data.reason"];
+        id subject = [notice valueForKeyPath:@"data.subject"];
+        if (![reason isKindOfClass:[NSString class]] || ![subject isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ServerAlert notice missing data.reason or data.subject: %@", noticeJSON]];
+            return;
+        }
+        id actionURLs = [notice valueForKeyPath:@"data.actionURLs"];
+        if (![actionURLs isKindOfClass:[NSArray class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ServerAlert notice missing data.actionURLs: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onServerAlert:::)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onServerAlert:reason:subject:actionURLs];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ApplicationParameters"]) {
+        
+        id parameters = [notice valueForKeyPath:@"data.parameters"];
+        if (![parameters isKindOfClass:[NSDictionary class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ApplicationParameters notice missing data.parameters: %@", noticeJSON]];
+            return;
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onApplicationParameters:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onApplicationParameters:parameters];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"InproxyMustUpgrade"]) {
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onInproxyMustUpgrade)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onInproxyMustUpgrade];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"InproxyProxyActivity"]) {
+        // TODO: Parse and forward personalRegionActivity and
+        // commonRegionActivity. This should be done when the conduit iOS app
+        // supports the tunnel functionality correctly
+        id announcing = [notice valueForKeyPath:@"data.announcing"];
+        id connectingClients = [notice valueForKeyPath:@"data.connectingClients"];
+        id connectedClients = [notice valueForKeyPath:@"data.connectedClients"];
+        id bytesUp = [notice valueForKeyPath:@"data.bytesUp"];
+        id bytesDown = [notice valueForKeyPath:@"data.bytesDown"];
+        if (![announcing isKindOfClass:[NSNumber class]] ||
+            ![connectingClients isKindOfClass:[NSNumber class]] ||
+            ![connectedClients isKindOfClass:[NSNumber class]] ||
+            ![bytesUp isKindOfClass:[NSNumber class]] ||
+            ![bytesDown isKindOfClass:[NSNumber class]]) {
+            [self logMessage:[NSString stringWithFormat: @"InproxyProxyActivity notice has invalid data types: %@", noticeJSON]];
+            return;
+        }
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onInproxyProxyActivity:connectingClients:connectedClients:bytesUp:bytesDown:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onInproxyProxyActivity: [announcing intValue]
+                    connectingClients:[connectingClients intValue] connectedClients:[connectedClients intValue]
+                    bytesUp:[bytesUp longValue] bytesDown:[bytesDown longValue]];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"ConnectedServerRegion"]) {
+        id region = [notice valueForKeyPath:@"data.serverRegion"];
+        if (![region isKindOfClass:[NSString class]]) {
+            [self logMessage:[NSString stringWithFormat: @"ConnectedServerRegion notice missing data.serverRegion: %@", noticeJSON]];
+            return;
+        }
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onConnectedServerRegion:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onConnectedServerRegion:region];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"LightProxyAvailable"]) {
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onLightProxyAvailable)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onLightProxyAvailable];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"DSLAccessTokenAvailable"]) {
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onAccessTokenAvailable)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onAccessTokenAvailable];
+            });
+        }
+    }
+    else if ([noticeType isEqualToString:@"InternalError"]) {
+        internalError = TRUE;
+    }
+    
+    // When tunnel-core is managing diagnostics, onDiagnosticMessage is
+    // typically not called: the user app will get callbacks for specific
+    // events such as onConnected, and for all other notices tunnel-core
+    // is recording them and the overhead of posting to the user app is
+    // redundant and unnecessary.
+    //
+    // The only exception is NoticeInternalError, where tunnel-core has
+    // failed to log a notice. In this case, the user app receives
+    // onDiagnosticMessage and a chance to report the error.
+    //
+    // Otherwise, when tunnel-core is not managing diagnostics, pass
+    // diagnostic messages to onDiagnosticMessage.
+    if (diagnostic &&
+        (atomic_load(&self->usingNoticeFiles) == FALSE || internalError == TRUE)) {
+
+        NSDictionary *data = notice[@"data"];
+        if (data == nil) {
+            return;
+        }
+        
+        NSString *dataStr = [[[SBJson4Writer alloc] init] stringWithObject:data];
+        NSString *timestampStr = notice[@"timestamp"];
+        if (timestampStr == nil) {
+            return;
+        }
+
+        NSString *diagnosticMessage = [NSString stringWithFormat:@"%@: %@", noticeType, dataStr];
+        [self postDiagnosticMessage:diagnosticMessage withTimestamp:timestampStr];
+    }
+}
+
+- (void)logMessage:(NSString *)message {
+
+    // When tunnel-core is configured to manage diagnostics,
+    // library logMessages are sent to tunnel-core.
+    // Otherwise, they are posted to onDiagnosticMessage for
+    // the user app to manage.
+
+    if (atomic_load(&self->usingNoticeFiles) == TRUE) {
+        GoPsiNoticeUserLog(message);
+    } else {
+        NSString *timestamp = [rfc3339Formatter stringFromDate:[NSDate date]];
+        [self postDiagnosticMessage:message withTimestamp:timestamp];
+    }
+}
+
+- (void)postDiagnosticMessage:(NSString *)message withTimestamp:(NSString * _Nonnull)timestamp {
+    if ([self.tunneledAppDelegate respondsToSelector:@selector(onDiagnosticMessage:withTimestamp:)]) {
+        dispatch_sync(self->callbackQueue, ^{
+            [self.tunneledAppDelegate onDiagnosticMessage:message withTimestamp:timestamp];
+        });
+    }
+}
+
+#pragma mark - GoPsiPsiphonProvider protocol implementation (private)
+
+- (NSString *)bindToDevice:(long)fileDescriptor error:(NSError **)error {
+
+    *error = [[NSError alloc] initWithDomain:@"iOSLibrary" code:1 userInfo:@{NSLocalizedDescriptionKey: @"bindToDevice: not supported"}];
+    return @"";
+}
+
+- (NSString *)getDNSServersAsString {
+
+    // In non-VPN mode, don't use the tunnel-core custom DNS resolver with
+    // any system DNS servers, as these are commonly LAN addresses and
+    // sending UDP packets to the LAN will trigger Local Network Privacy
+    // permissions requirements.
+    if (self->tunnelWholeDevice == TRUE && atomic_load(&self->useInitialDNS)) {
+        return self->initialDNSCache;
+    } else {
+        // Alternate DNS servers may be provided by psiphon-tunnel-core config
+        // or tactics, or the system default resolver may be used (Go on iOS
+        // uses the C standard library resolver via CGO, and iOS ensures
+        // those calls are routed outside of the VPN when invoked from a VPN
+        // extension).
+        return @"";
+    }
+}
+
+- (long)hasNetworkConnectivity {
+
+    BOOL hasConnectivity = [self->reachability reachabilityStatus] != NetworkReachabilityNotReachable;
+
+    if (!hasConnectivity) {
+        // changeConnectionStateTo self-throttles, so even if called multiple
+        // times it won't send multiple messages to the app.
+        [self changeConnectionStateTo:PsiphonConnectionStateWaitingForNetwork evenIfSameState:NO];
+    }
+
+    return hasConnectivity;
+}
+
+- (NSString *)iPv6Synthesize:(NSString *)IPv4Addr {
+    return [IPv6Synthesizer IPv4ToIPv6:IPv4Addr];
+}
+
+- (long)hasIPv6Route {
+    // Unused on iOS.
+    return FALSE;
+}
+
+- (NSString *)getNetworkID {
+    NSError *warn;
+    NSString *networkID = [NetworkID getNetworkIDWithReachability:self->reachability
+                                          andCurrentNetworkStatus:atomic_load(&self->currentNetworkStatus)
+                                                tunnelWholeDevice:self->tunnelWholeDevice
+                                                          warning:&warn];
+    if (warn != nil) {
+        [self logMessage:[NSString stringWithFormat:@"error getting network ID: %@", warn.localizedDescription]];
+    }
+    return networkID;
+}
+
+- (void)notice:(NSString *)noticeJSON {
+    // To prevent out-of-control memory usage, we want to limit the number of notices
+    // we asynchronously queue. Note that this means we'll start blocking Go threads
+    // after the first notice, but that's still preferable to a memory explosion.
+    dispatch_semaphore_wait(self->noticeHandlingSemaphore, DISPATCH_TIME_FOREVER);
+
+    dispatch_async(self->workQueue, ^{
+        [self handlePsiphonNotice:noticeJSON];
+        dispatch_semaphore_signal(self->noticeHandlingSemaphore);
+    });
+}
+
+#pragma mark - Helpers (private)
+
+/**
+    @brief Returns NSString array of DNS addresses for current active
+           network interface using libresolv.
+    @return Array of DNS addresses, nil on failure.
+ */
+
+- (NSArray<NSString *> *)getSystemDNSServers {
+    NSMutableArray<NSString *> *serverList = [NSMutableArray new];
+
+    // Limitations:
+    //
+    // - May not work on IPv6-only networks:
+    //   https://developer.apple.com/forums/thread/86338.
+    //
+    // - Will not return the DNS servers for the underlying physical network
+    //   once the VPN is running:
+    //   https://developer.apple.com/forums/thread/661601.
+    //
+    // - Potential APIs which return the DNS servers associated with an
+    //   interface (e.g, invoke nw_path_get_dns_servers as part of
+    //   NWPathMonitor) are private:
+    //   https://developer.apple.com/forums/thread/107861.
+    //
+    // - High-level APIs such as resolving and making connections via
+    //   NEPacketTunnelProvider are missing circumvention capabilities.
+
+    res_state _state;
+    _state = malloc(sizeof(struct __res_state));
+
+    if (res_ninit(_state) < 0) {
+        [self logMessage:@"getSystemDNSServers: res_ninit failed."];
+        free(_state);
+        return nil;
+    }
+
+    union res_sockaddr_union servers[NI_MAXSERV];  // Default max 32
+
+    int numServersFound = res_getservers(_state, servers, NI_MAXSERV);
+
+    char hostBuf[NI_MAXHOST];
+    for (int i = 0; i < numServersFound; i++) {
+        union res_sockaddr_union s = servers[i];
+
+        if (s.sin.sin_len == 0) {
+            continue;
+        }
+
+        switch (s.sin.sin_family) {
+            case AF_INET: {
+                uint32_t address = ntohl(s.sin.sin_addr.s_addr);
+                if (address == INADDR_ANY ||
+                        IN_MULTICAST(address) ||
+                        IN_LINKLOCAL(address)) {
+                    continue;
+                }
+                break;
+            }
+
+            case AF_INET6: {
+                const struct in6_addr *address = &s.sin6.sin6_addr;
+                if (IN6_IS_ADDR_UNSPECIFIED(address) ||
+                        IN6_IS_ADDR_MULTICAST(address)) {
+                    continue;
+                }
+
+                // Link-local DNS IPv6 servers are accepted only with a zone/scope ID.
+                if (IN6_IS_ADDR_LINKLOCAL(address) && s.sin6.sin6_scope_id == 0) {
+                    continue;
+                }
+                break;
+            }
+
+            default: {
+                continue;
+            }
+        }
+
+        int ret_code = getnameinfo((struct sockaddr *)&s,
+          (socklen_t)s.sin.sin_len,
+          (char *)&hostBuf,
+          sizeof(hostBuf),
+          nil,
+          0,
+          NI_NUMERICHOST); // Flag "numeric form of hostname"
+
+        if (EXIT_SUCCESS == ret_code) {
+            NSString *server = [NSString stringWithUTF8String:hostBuf];
+
+            if (s.sin.sin_family == AF_INET6 &&
+                    IN6_IS_ADDR_LINKLOCAL(&s.sin6.sin6_addr) &&
+                    [server rangeOfString:@"%"].location == NSNotFound) {
+
+                char interfaceName[IF_NAMESIZE];
+                if (if_indextoname(s.sin6.sin6_scope_id, interfaceName) != NULL) {
+                    server = [server stringByAppendingFormat:@"%%%s", interfaceName];
+                } else {
+                    server = [server stringByAppendingFormat:@"%%%u",
+                              (unsigned int)s.sin6.sin6_scope_id];
+                }
+            }
+
+            [serverList addObject:server];
+
+        } else {
+            [self logMessage:[NSString stringWithFormat:
+                              @"getSystemDNSServers: getnameinfo failed: %d",
+                              ret_code]];
+        }
+    }
+
+    // Clear memory used by res_ninit
+    res_ndestroy(_state);
+    free(_state);
+
+    return serverList;
+}
+
+- (void)changeConnectionStateTo:(PsiphonConnectionState)newState evenIfSameState:(BOOL)forceNotification {
+    // Store the new state and get the old state.
+    PsiphonConnectionState oldState = atomic_exchange(&self->connectionState, newState);
+
+    // If the state has changed, inform the app.
+    if (forceNotification || oldState != newState) {
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onConnectionStateChangedFrom:to:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onConnectionStateChangedFrom:oldState to:newState];
+            });
+        }
+
+        if (newState == PsiphonConnectionStateDisconnected) {
+            // This isn't a message sent to the app.
+        }
+        else if (newState == PsiphonConnectionStateConnecting &&
+                 [self.tunneledAppDelegate respondsToSelector:@selector(onConnecting)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onConnecting];
+            });
+        }
+        else if (newState == PsiphonConnectionStateConnected &&
+                 [self.tunneledAppDelegate respondsToSelector:@selector(onConnected)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onConnected];
+            });
+        }
+        else if (newState == PsiphonConnectionStateWaitingForNetwork &&
+                 [self.tunneledAppDelegate respondsToSelector:@selector(onStartedWaitingForNetworkConnectivity)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onStartedWaitingForNetworkConnectivity];
+            });
+        }
+    }
+}
+
+/*!
+ Checks if the local proxy at a given port is responding.
+ NOTE: This must only be called when there's a valid SOCKS or HTTP proxy port (i.e., when
+ we're in a connected state.)
+ @return  TRUE if the local proxy is responding, FALSE otherwise.
+ */
+- (BOOL)isLocalProxyAliveAtPort:(NSInteger)port {
+    CFSocketRef sockfd;
+    sockfd = CFSocketCreate(NULL, AF_INET, SOCK_STREAM, IPPROTO_TCP, 0, NULL, NULL);
+    if (sockfd == NULL) {
+        // An error occurred creating the socket. It's impossible to complete
+        // the test. We'll be optimistic.
+        return YES;
+    }
+
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_len = sizeof(servaddr);
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(port);
+    inet_pton(AF_INET, [@"127.0.0.1" cStringUsingEncoding:NSUTF8StringEncoding], &servaddr.sin_addr);
+
+    CFDataRef connectAddr = CFDataCreate(NULL, (unsigned char *)&servaddr, sizeof(servaddr));
+    if (connectAddr == NULL) {
+        CFSocketInvalidate(sockfd);
+        CFRelease(sockfd);
+        // Again, be optimistic.
+        return YES;
+    }
+
+    BOOL proxyTestSuccess = YES;
+    if (CFSocketConnectToAddress(sockfd, connectAddr, 1) != kCFSocketSuccess) {
+        proxyTestSuccess = NO;
+    }
+
+    CFSocketInvalidate(sockfd);
+    CFRelease(sockfd);
+    CFRelease(connectAddr);
+
+    return proxyTestSuccess;
+}
+
+- (BOOL)isLocalProxyAliveAtUnixPath:(NSString *)path {
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+
+    const char *cPath = [path fileSystemRepresentation];
+    // If the path can't be represented or won't fit in sun_path, we can't
+    // complete the test. Be optimistic, matching isLocalProxyAliveAtPort:.
+    if (cPath == NULL || strlen(cPath) >= sizeof(addr.sun_path)) {
+        return YES;
+    }
+    strlcpy(addr.sun_path, cPath, sizeof(addr.sun_path));
+    addr.sun_len = SUN_LEN(&addr);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        // Can't create the socket; be optimistic.
+        return YES;
+    }
+
+    BOOL proxyTestSuccess = (connect(fd, (struct sockaddr *)&addr, addr.sun_len) == 0);
+    close(fd);
+
+    return proxyTestSuccess;
+}
+
+// We are going to do our own monitoring of the network reachability, rather
+// than relying on the tunnel to inform us. This is because it can take a long
+// time for the tunnel to notice the network is gone (depending on attempts to
+// use the tunnel).
+- (void)startInternetReachabilityMonitoring {
+    // (1) Start notifier and then (2) sample the reachability status to bootstrap current network
+    // status. This ordering is required to ensure we do not miss any reachability status updates.
+    // Note: this function must complete execution before any reachability changed notifications are
+    // processed to ensure ordering; otherwise (2) may overwrite the current network status with a
+    // stale value in the unlikely event where a reachability changed notification is emitted
+    // immediately after (1).
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(internetReachabilityChanged:) name:kReachabilityChangedNotification object :nil];
+    [self->reachability startNotifier];
+    atomic_store(&self->currentNetworkStatus, [self->reachability reachabilityStatus]);
+}
+
+- (void)stopInternetReachabilityMonitoring {
+    [self->reachability stopNotifier];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:kReachabilityChangedNotification object:nil];
+}
+
+- (void)internetReachabilityChanged:(NSNotification *)note {
+    // Ensure notifications are not processed until current network status is
+    // bootstrapped. See comment in startInternetReachabilityMonitoring.
+    @synchronized (PsiphonTunnel.self) {
+        // Invalidate initialDNSCache due to limitations documented in
+        // getSystemDNSServers.
+        //
+        // TODO: consider at least reverting to using the initialDNSCache when a
+        // new network ID matches the initial network ID -- i.e., when the device
+        // is back on the initial network -- even though those DNS servers _may_
+        // have changed.
+        atomic_store(&self->useInitialDNS, FALSE);
+
+        NetworkReachability networkStatus;
+        NetworkReachability previousNetworkStatus;
+        BOOL interfaceChanged = FALSE;
+
+        // Pass current reachability through to the delegate
+        // as soon as a network reachability change is detected
+        if (@available(iOS 12.0, *)) {
+            ReachabilityChangedNotification *notif = [note object];
+            networkStatus = notif.reachabilityStatus;
+            if (notif.prevDefaultActiveInterfaceName == nil && notif.curDefaultActiveInterfaceName == nil) {
+                // no interface change
+            } else if (notif.prevDefaultActiveInterfaceName == nil || notif.curDefaultActiveInterfaceName == nil) {
+                // interface appeared or disappeared
+                interfaceChanged = TRUE;
+            } else if (![notif.prevDefaultActiveInterfaceName isEqualToString:notif.curDefaultActiveInterfaceName]) {
+                // active interface changed
+                interfaceChanged = TRUE;
+            }
+        } else {
+            Reachability* currentReachability = [note object];
+            networkStatus = [currentReachability reachabilityStatus];
+        }
+
+        if ([self.tunneledAppDelegate respondsToSelector:@selector(onInternetReachabilityChanged:)]) {
+            dispatch_sync(self->callbackQueue, ^{
+                [self.tunneledAppDelegate onInternetReachabilityChanged:networkStatus];
+            });
+        }
+
+        previousNetworkStatus = atomic_exchange(&self->currentNetworkStatus, networkStatus);
+
+        // Signal when the network status or interface has changed, unless the
+        // previous status was NetworkReachabilityNotReachable, because the
+        // tunnel should be waiting for connectivity in that case.
+        //
+        // GoPsiNetworkChanged initiates a reset of all open network
+        // connections, including a tunnel reconnect.
+        if ((networkStatus != previousNetworkStatus || interfaceChanged) && previousNetworkStatus != NetworkReachabilityNotReachable) {
+            GoPsiNetworkChanged();
+        }
+    }
+}
+
+// See comment in header
++ (NSString * _Nonnull)getDeviceRegion {
+#if TARGET_OS_IPHONE
+    // First try getting from telephony info (will fail for non-phones and simulator)
+    if (@available(iOS 16.0, macCatalyst 16.0, *)) {
+        // CTCarrier deprecated with no replacement as of iOS 16 so there is no alternative API to
+        // get the carrier country code; [CTCarrier isoCountryCode] returns @"--" on iOS >=16.
+
+        NSString *contactsCountryCode = nil;
+        @synchronized ([CNContactsUserDefaults class]) {
+            contactsCountryCode = [[[CNContactsUserDefaults sharedDefaults] countryCode] uppercaseString];
+        }
+        if (contactsCountryCode.length > 0) {
+            return contactsCountryCode;
+        }
+    } else {
+        CTTelephonyNetworkInfo *networkInfo = nil;
+        CTCarrier *carrier = nil;
+        NSString *carrierCountryCode = nil;
+        if ((networkInfo = [[CTTelephonyNetworkInfo alloc] init]) != nil &&
+            (carrier = [networkInfo subscriberCellularProvider]) != nil &&
+            (carrierCountryCode = [carrier isoCountryCode]) != nil &&
+            carrierCountryCode.length > 0) {
+            return [carrierCountryCode uppercaseString];
+        }
+    }
+#endif
+
+    // Next try to map the time zone to a country code.
+    NSString *timezoneCountryCode = [IANATimeZoneCountry
+        countryCodeForTimeZoneName:[[NSTimeZone systemTimeZone] name]];
+    if (timezoneCountryCode != nil) {
+        return timezoneCountryCode;
+    }
+    
+    // Next try getting the region from the current locale. This isn't terribly
+    // reliable (because, for example, en-US is used in a lot of places that
+    // aren't the US).
+    NSString *localeCountryCode = [[NSLocale currentLocale] objectForKey:NSLocaleCountryCode];
+    
+    if (localeCountryCode.length > 0) {
+        return [localeCountryCode uppercaseString];
+    }
+    
+    return @"";
+}
+
+// RFC3339 formatter.
++ (NSDateFormatter*)rfc3339Formatter {
+
+    NSDateFormatter *rfc3339Formatter = [[NSDateFormatter alloc] init];
+    NSLocale *enUSPOSIXLocale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    [rfc3339Formatter setLocale:enUSPOSIXLocale];
+
+    // Example: notice time format from Go code: "2006-01-02T15:04:05.999Z07:00"
+    [rfc3339Formatter setDateFormat:@"yyyy'-'MM'-'dd'T'HH':'mm':'ss.SSSZZZZZ"];
+    [rfc3339Formatter setTimeZone:[NSTimeZone timeZoneForSecondsFromGMT:0]];
+
+    return rfc3339Formatter;
+}
+
+/*!
+ generateSessionID generates a session ID suitable for use with the Psiphon API.
+ */
++ (NSString *)generateSessionID:(NSError *_Nullable *_Nonnull)outError {
+
+    *outError = nil;
+
+    const int sessionIDLen = 16;
+    uint8_t sessionID[sessionIDLen];
+    int result = SecRandomCopyBytes(kSecRandomDefault, sessionIDLen, sessionID);
+    if (result != errSecSuccess) {
+        NSString *errorDescription = [NSString stringWithFormat:@"Error generating session ID: %d", result];
+        *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                        code:PsiphonTunnelErrorCodeGenerateSessionIDError
+                                    userInfo:@{NSLocalizedDescriptionKey:errorDescription}];
+        return nil;
+    }
+    NSMutableString *hexEncodedSessionID = [NSMutableString stringWithCapacity:(sessionIDLen*2)];
+    for (int i = 0; i < sessionIDLen; i++) {
+        [hexEncodedSessionID appendFormat:@"%02x", sessionID[i]];
+    }
+    return hexEncodedSessionID;
+}
+
+@end
+
+// See comment in header.
+@implementation PsiphonTunnelFeedback {
+    dispatch_queue_t workQueue;
+    dispatch_queue_t callbackQueue;
+}
+
+- (id)init {
+    self = [super init];
+    if (self) {
+        self->workQueue = dispatch_queue_create("com.psiphon3.library.feedback.WorkQueue", DISPATCH_QUEUE_SERIAL);
+        self->callbackQueue = dispatch_queue_create("com.psiphon3.library.feedback.CallbackQueue", DISPATCH_QUEUE_SERIAL);
+    }
+    return self;
+}
+
+// See comment in header.
+- (void)startSendFeedback:(NSString * _Nonnull)feedbackJson
+       feedbackConfigJson:(id _Nonnull)feedbackConfigJson
+               uploadPath:(NSString * _Nonnull)uploadPath
+           loggerDelegate:(id<PsiphonTunnelLoggerDelegate> _Nullable)loggerDelegate
+         feedbackDelegate:(id<PsiphonTunnelFeedbackDelegate> _Nonnull)feedbackDelegate {
+
+    dispatch_async(self->workQueue, ^{
+
+        __weak PsiphonTunnelFeedback *weakSelf = self;
+        __weak id<PsiphonTunnelLoggerDelegate> weakLogger = loggerDelegate;
+        __weak id<PsiphonTunnelFeedbackDelegate> weakFeedbackDelegate = feedbackDelegate;
+
+        void (^logMessage)(NSString * _Nonnull) = ^void(NSString * _Nonnull message) {
+            __strong PsiphonTunnelFeedback *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            __strong id<PsiphonTunnelLoggerDelegate> strongLogger = weakLogger;
+            if (strongLogger == nil) {
+                return;
+            }
+            if ([strongLogger respondsToSelector:@selector(onDiagnosticMessage:withTimestamp:)]) {
+                NSString *timestamp = [[PsiphonTunnel rfc3339Formatter] stringFromDate:[NSDate date]];
+                dispatch_sync(strongSelf->callbackQueue, ^{
+                    [strongLogger onDiagnosticMessage:message withTimestamp:timestamp];
+                });
+            }
+        };
+
+        NSError *err;
+        NSString *sessionID = [PsiphonTunnel generateSessionID:&err];
+        if (err != nil) {
+            [feedbackDelegate sendFeedbackCompleted:err];
+            return;
+        }
+
+        BOOL tunnelWholeDevice = FALSE;
+        BOOL usingNoticeFiles = FALSE;
+
+        NSString *psiphonConfig = [PsiphonTunnel buildPsiphonConfig:feedbackConfigJson
+                                                  tunnelWholeDevice:&tunnelWholeDevice
+                                                   usingNoticeFiles:&usingNoticeFiles
+                                                          sessionID:sessionID
+                                                         logMessage:logMessage
+                                                              error:&err];
+        if (err != nil) {
+            NSError *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                                    code:PsiphonTunnelErrorCodeConfigError
+                                                userInfo:@{NSLocalizedDescriptionKey:@"Error building config",
+                                                           NSUnderlyingErrorKey:err}];
+            dispatch_sync(self->callbackQueue, ^{
+                [feedbackDelegate sendFeedbackCompleted:outError];
+            });
+            return;
+        } else if (psiphonConfig == nil) {
+            // Should never happen.
+            NSError *err = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                               code:PsiphonTunnelErrorCodeConfigError
+                                           userInfo:@{NSLocalizedDescriptionKey:@"Error built config nil"}];
+            dispatch_sync(self->callbackQueue, ^{
+                [feedbackDelegate sendFeedbackCompleted:err];
+            });
+            return;
+        }
+
+        void (^sendFeedbackCompleted)(NSError * _Nonnull) = ^void(NSError * _Nonnull err) {
+            __strong PsiphonTunnelFeedback *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            __strong id<PsiphonTunnelFeedbackDelegate> strongFeedbackDelegate = weakFeedbackDelegate;
+            if (strongFeedbackDelegate == nil) {
+                return;
+            }
+
+            NSError *outError = nil;
+
+            if (err != nil) {
+                outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                               code:PsiphonTunnelErrorCodeSendFeedbackError
+                                           userInfo:@{NSLocalizedDescriptionKey:@"Error sending feedback",
+                                                      NSUnderlyingErrorKey:err}];
+            }
+            dispatch_sync(strongSelf->callbackQueue, ^{
+                [strongFeedbackDelegate sendFeedbackCompleted:outError];
+            });
+        };
+
+        PsiphonProviderFeedbackHandlerShim *innerFeedbackHandler =
+            [[PsiphonProviderFeedbackHandlerShim alloc] initWithHandler:sendFeedbackCompleted];
+
+        PsiphonProviderNoticeHandlerShim *noticeHandler = nil;
+
+        if (loggerDelegate != nil) {
+
+            // Convert notice to a diagnostic message and then log it.
+            void (^logNotice)(NSString * _Nonnull) = ^void(NSString * _Nonnull noticeJSON) {
+                __strong PsiphonTunnelFeedback *strongSelf = weakSelf;
+                if (strongSelf == nil) {
+                    return;
+                }
+                __strong id<PsiphonTunnelLoggerDelegate> strongLogger = weakLogger;
+                if (strongLogger == nil) {
+                    return;
+                }
+                if ([strongLogger respondsToSelector:@selector(onDiagnosticMessage:withTimestamp:)]) {
+
+                    __block NSDictionary *notice = nil;
+                    id block = ^(id obj, BOOL *ignored) {
+                        if (ignored == nil || *ignored == YES) {
+                            return;
+                        }
+                        notice = (NSDictionary *)obj;
+                    };
+
+                    id eh = ^(NSError *err) {
+                        notice = nil;
+                        logMessage([NSString stringWithFormat: @"Notice JSON parse failed: %@", err.description]);
+                    };
+
+                    id parser = [SBJson4Parser parserWithBlock:block allowMultiRoot:NO unwrapRootArray:NO errorHandler:eh];
+                    [parser parse:[noticeJSON dataUsingEncoding:NSUTF8StringEncoding]];
+
+                    if (notice == nil) {
+                        return;
+                    }
+
+                    NSString *noticeType = notice[@"noticeType"];
+                    if (noticeType == nil) {
+                        logMessage(@"Notice missing noticeType");
+                        return;
+                    }
+
+                    NSDictionary *data = notice[@"data"];
+                    if (data == nil) {
+                        return;
+                    }
+
+                    NSString *dataStr = [[[SBJson4Writer alloc] init] stringWithObject:data];
+                    NSString *timestampStr = notice[@"timestamp"];
+                    if (timestampStr == nil) {
+                        return;
+                    }
+
+                    NSString *diagnosticMessage = [NSString stringWithFormat:@"%@: %@", noticeType, dataStr];
+                    dispatch_sync(strongSelf->callbackQueue, ^{
+                        [strongLogger onDiagnosticMessage:diagnosticMessage withTimestamp:timestampStr];
+                    });
+                }
+            };
+
+            noticeHandler = [[PsiphonProviderNoticeHandlerShim alloc] initWithLogger:logNotice];
+        }
+
+        NSDateFormatter *rfc3339Formatter = [PsiphonTunnel rfc3339Formatter];
+
+        void (^logger)(NSString * _Nonnull) = ^void(NSString * _Nonnull msg) {
+            __strong PsiphonTunnelFeedback *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            __strong id<PsiphonTunnelLoggerDelegate> strongLogger = weakLogger;
+            if (strongLogger == nil) {
+                return;
+            }
+            if ([strongLogger respondsToSelector:@selector(onDiagnosticMessage:withTimestamp:)]) {
+
+                NSString *timestampStr = [rfc3339Formatter stringFromDate:[NSDate date]];
+                dispatch_sync(strongSelf->callbackQueue, ^{
+                    [strongLogger onDiagnosticMessage:msg withTimestamp:timestampStr];
+                });
+            }
+        };
+
+        PsiphonProviderNetwork *networkInfoProvider = [[PsiphonProviderNetwork alloc]
+                                                       initWithTunnelWholeDevice:tunnelWholeDevice
+                                                       logger:logger];
+
+        GoPsiStartSendFeedback(
+            psiphonConfig,
+            feedbackJson,
+            uploadPath,
+            innerFeedbackHandler,
+            networkInfoProvider,
+            noticeHandler,
+            UseIPv6Synthesizer,
+            UseHasIPv6RouteGetter,
+            &err);
+        if (err != nil) {
+            NSError *outError = [NSError errorWithDomain:PsiphonTunnelErrorDomain
+                                                    code:PsiphonTunnelErrorCodeSendFeedbackError
+                                                userInfo:@{NSLocalizedDescriptionKey:@"Error sending feedback",
+                                                           NSUnderlyingErrorKey:err}];
+            dispatch_sync(self->callbackQueue, ^{
+                __strong id<PsiphonTunnelFeedbackDelegate> strongFeedbackDelegate = weakFeedbackDelegate;
+                if (strongFeedbackDelegate == nil) {
+                    return;
+                }
+                [strongFeedbackDelegate sendFeedbackCompleted:outError];
+            });
+        }
+    });
+}
+
+// See comment in header.
+- (void)stopSendFeedback {
+    dispatch_sync(self->workQueue, ^{
+        GoPsiStopSendFeedback();
+    });
+}
+
+@end

@@ -1,0 +1,1179 @@
+/*
+ * Copyright (c) 2026, Psiphon Inc.
+ * All rights reserved.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+package light
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"net"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	tls "github.com/Psiphon-Labs/psiphon-tls"
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common"
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/errors"
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/parameters"
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/prng"
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/protocol"
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/proxyheader"
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/tlsdialer"
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/internal/testutils"
+	proxyproto "github.com/pires/go-proxyproto"
+	"golang.org/x/sync/errgroup"
+)
+
+func TestLightProxy(t *testing.T) {
+	for _, tlsTrafficShaping := range []bool{false, true} {
+		tlsTrafficShaping := tlsTrafficShaping
+		for _, addProxyHeader := range []bool{false, true} {
+			addProxyHeader := addProxyHeader
+			for _, sharedProxyLimits := range []bool{false, true} {
+				sharedProxyLimits := sharedProxyLimits
+				t.Run(
+					fmt.Sprintf(
+						"tlsTrafficShaping=%t/addProxyHeader=%t/sharedProxyLimits=%t",
+						tlsTrafficShaping, addProxyHeader, sharedProxyLimits),
+					func(t *testing.T) {
+						err := runTestLightProxy(
+							tlsTrafficShaping,
+							addProxyHeader,
+							sharedProxyLimits)
+						if err != nil {
+							t.Fatal(err.Error())
+						}
+					})
+			}
+		}
+	}
+}
+
+func TestIsLoopbackAddress(t *testing.T) {
+	tests := []struct {
+		address string
+		want    bool
+	}{
+		{"127.0.0.1:8080", true},
+		{"[::1]:8080", true},
+		{"localhost:8080", true},
+		{"LOCALHOST:8080", true},
+		{"192.168.0.1:8080", false},
+		{"invalid", false},
+	}
+	for _, test := range tests {
+		if got := isLoopbackAddress(test.address); got != test.want {
+			t.Errorf("isLoopbackAddress(%q) = %v, want %v", test.address, got, test.want)
+		}
+	}
+}
+
+func TestLightProxyPassthrough(t *testing.T) {
+	if err := runTestLightProxyPassthrough(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runTestLightProxyPassthrough() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
+	group, ctx := errgroup.WithContext(ctx)
+
+	_, _, webCertPEM, webKeyPEM, err := generateCert()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	webCert, err := tls.X509KeyPair(webCertPEM, webKeyPEM)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	webListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return errors.Trace(err)
+	}
+	defer webListener.Close()
+
+	group.Go(func() error {
+		return runTLSEchoServer(ctx, webListener, &tls.Config{
+			Certificates: []tls.Certificate{webCert},
+		})
+	})
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return errors.Trace(err)
+	}
+	proxyAddress := proxyListener.Addr().String()
+	proxyListener.Close()
+
+	_, _, proxyCertPEM, proxyKeyPEM, err := generateCert()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	receiver := newTestProxyEventReceiver(false, 0, false, "")
+
+	// Use a short deadline and inactivity timeout value to check that
+	// passthrough relays are exempt from these timeouts.
+	timeout := 1 * time.Second
+
+	proxy, err := NewProxy(
+		&ProxyConfig{
+			Protocol:             LIGHT_PROTOCOL_TLS,
+			ListenAddresses:      []string{proxyAddress},
+			DialAddressIPv4:      proxyAddress,
+			ObfuscationKey:       prng.HexString(32),
+			TLSCertificate:       proxyCertPEM,
+			TLSPrivateKey:        proxyKeyPEM,
+			PassthroughAddress:   webListener.Addr().String(),
+			AllowBogons:          true,
+			PreHeaderDeadlineMin: timeout.String(),
+			PreHeaderDeadlineMax: timeout.String(),
+			InactivityTimeout:    timeout.String(),
+		},
+		func(string) common.GeoIPData { return common.GeoIPData{} },
+		receiver)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	group.Go(func() error {
+		return proxy.Run(ctx)
+	})
+
+	select {
+	case <-receiver.listening:
+	case <-ctx.Done():
+		return errors.Trace(ctx.Err())
+	}
+
+	conn, err := tls.Dial("tcp", proxyAddress, &tls.Config{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	if !bytes.Equal(
+		conn.ConnectionState().PeerCertificates[0].Raw,
+		webCert.Certificate[0]) {
+
+		conn.Close()
+		return errors.TraceNew("did not receive passthrough certificate")
+	}
+
+	// Check that the passthrough relay is not subject to the proxy's
+	// inactivity timeout: perform an echo round trip, whose client bytes
+	// would re-arm an active inactivity deadline; hold the connection idle
+	// for longer than the timeout; then perform another round trip.
+
+	echo := func(message string) error {
+		request := []byte(message)
+		_, err := conn.Write(request)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		response := make([]byte, len(request))
+		_, err = io.ReadFull(conn, response)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		if !bytes.Equal(request, response) {
+			return errors.TraceNew("unexpected echo response")
+		}
+		return nil
+	}
+
+	err = echo("passthrough echo 1")
+	if err != nil {
+		conn.Close()
+		return errors.Trace(err)
+	}
+
+	time.Sleep(2 * timeout)
+
+	err = echo("passthrough echo 2")
+	if err != nil {
+		conn.Close()
+		return errors.Trace(err)
+	}
+
+	conn.Close()
+	cancel()
+	return errors.Trace(group.Wait())
+}
+
+func runTestLightProxy(
+	tlsTrafficShaping, addProxyHeader, sharedProxyLimits bool) error {
+
+	// Exercise multiple concurrent clients and concurrent dials over over one
+	// proxy. The proxied traffic is an inner TLS connection to an "echo"
+	// server, and the echoed bytes are verified. The outer proxy TLS
+	// connection is observed and expected padding target ranges are also
+	// verified.
+
+	const (
+		numClients              = 2
+		numConnectionsPerClient = 10
+		payloadSize             = 10 * 1024 * 1024
+		bytesPerSecond          = 1 << 30
+
+		testClientPlatform          = "Android"
+		testClientBuildRev          = "01020304"
+		testDeviceRegion            = "US"
+		testClientRegion            = "CA"
+		testProviderID              = "01020304"
+		testSponsorID               = "0102030405060708"
+		testProxyEntryTracker int64 = 0x0102030405060708
+		testNetworkType             = "WIFI"
+		testTLSProfile              = protocol.TLS_PROFILE_CHROME_133
+		testTLSPaddingLength        = 128
+	)
+
+	recommendedFragmentClientHelloProbability := 0.0
+	recommendedTLSPaddingProbability := 0.0
+	recommendedMinTLSPadding := 0
+	recommendedMaxTLSPadding := 0
+	expectedTLSClientHelloFragmented := false
+	expectedTLSClientHelloPadding := 0
+	if tlsTrafficShaping {
+		recommendedFragmentClientHelloProbability = 1.0
+		recommendedTLSPaddingProbability = 1.0
+		recommendedMinTLSPadding = testTLSPaddingLength
+		recommendedMaxTLSPadding = testTLSPaddingLength
+		expectedTLSClientHelloFragmented = true
+		expectedTLSClientHelloPadding = testTLSPaddingLength
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	serverGroup, serverCtx := errgroup.WithContext(ctx)
+
+	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return errors.Trace(err)
+	}
+	defer echoListener.Close()
+
+	echoAddress := echoListener.Addr().String()
+
+	var proxyProtocolHeaderCount atomic.Int64
+	var proxyProtocolHeaderKeyID []byte
+	var proxyProtocolHeaderKey []byte
+	var proxyProtocolHeaderMACKeys map[string]string
+	var proxyProtocolHeaderCustomTLV []byte
+	var proxyProtocolHeaderCustomTLVs map[string]string
+	var proxyProtocolHeaderTargetDestinationAddresses map[string][]string
+
+	if addProxyHeader {
+		proxyProtocolHeaderKeyID = []byte{0x00, 0x00, 0x00, 0x01}
+		proxyProtocolHeaderKey = prng.Bytes(proxyheader.ProxyProtocolHeaderMACKeySize)
+		proxyProtocolHeaderMACKey := append(
+			append([]byte(nil), proxyProtocolHeaderKeyID...),
+			proxyProtocolHeaderKey...)
+		proxyProtocolHeaderMACKeys = map[string]string{
+			testSponsorID: base64.StdEncoding.EncodeToString(proxyProtocolHeaderMACKey)}
+		proxyProtocolHeaderCustomTLV = append(
+			[]byte{byte(proxyproto.PP2_TYPE_MAX_CUSTOM)}, prng.Bytes(16)...)
+		proxyProtocolHeaderCustomTLVs = map[string]string{
+			testSponsorID: base64.StdEncoding.EncodeToString(
+				proxyProtocolHeaderCustomTLV)}
+		proxyProtocolHeaderTargetDestinationAddresses = map[string][]string{
+			testSponsorID: {echoAddress}}
+
+		echoHost, echoPortStr, err := net.SplitHostPort(echoAddress)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		echoIP := net.ParseIP(echoHost)
+		if echoIP == nil {
+			return errors.TraceNew("invalid echo IP")
+		}
+		echoPort, err := strconv.Atoi(echoPortStr)
+		if err != nil {
+			return errors.Trace(err)
+		}
+
+		echoListener = &proxyproto.Listener{
+			Listener: echoListener,
+			ValidateHeader: func(header *proxyproto.Header) error {
+				wireHeader, err := header.Format()
+				if err != nil {
+					return errors.Trace(err)
+				}
+
+				timestamp, sourceIP, destinationIP, destinationPort, err :=
+					proxyheader.VerifyProxyProtocolHeader(
+						proxyProtocolHeaderKeyID,
+						proxyProtocolHeaderKey,
+						wireHeader)
+				if err != nil {
+					return errors.Trace(err)
+				}
+				if time.Now().Sub(timestamp).Abs() > 5*time.Second ||
+					!sourceIP.IsLoopback() ||
+					!destinationIP.Equal(echoIP) ||
+					destinationPort != echoPort {
+
+					return errors.TraceNew("unexpected PROXY header value")
+				}
+
+				tlvs, err := header.TLVs()
+				if err != nil {
+					return errors.Trace(err)
+				}
+				if len(tlvs) != 2 ||
+					tlvs[0].Type != proxyproto.PP2Type(proxyProtocolHeaderCustomTLV[0]) ||
+					!bytes.Equal(tlvs[0].Value, proxyProtocolHeaderCustomTLV[1:]) {
+
+					return errors.TraceNew("unexpected PROXY header custom TLV")
+				}
+				proxyProtocolHeaderCount.Add(1)
+				return nil
+			},
+		}
+	}
+
+	serverGroup.Go(func() error {
+
+		_, _, echoCertPEM, echoKeyPEM, err := generateCert()
+		if err != nil {
+			return errors.Trace(err)
+		}
+
+		echoCert, err := tls.X509KeyPair(echoCertPEM, echoKeyPEM)
+		if err != nil {
+			return errors.Trace(err)
+		}
+
+		return runTLSEchoServer(
+			serverCtx,
+			echoListener,
+			&tls.Config{
+				Certificates: []tls.Certificate{echoCert},
+				MinVersion:   tls.VersionTLS13,
+			})
+	})
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	proxyAddress := proxyListener.Addr().String()
+	err = proxyListener.Close()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	// Exercise the dual dialer.
+	proxyIPv6Address := net.JoinHostPort(
+		"::1",
+		strconv.Itoa(proxyListener.Addr().(*net.TCPAddr).Port))
+
+	proxyConfig, proxyEntry, err := Generate(
+		testProviderID,
+		[]string{proxyAddress, proxyIPv6Address},
+		proxyAddress,
+		proxyIPv6Address,
+		"example.org",
+		"",
+		0.0,
+		"",
+		0.0,
+		recommendedFragmentClientHelloProbability,
+		recommendedTLSPaddingProbability,
+		recommendedMinTLSPadding,
+		recommendedMaxTLSPadding,
+		0,
+		[]string{echoAddress},
+		proxyProtocolHeaderMACKeys,
+		proxyProtocolHeaderCustomTLVs,
+		proxyProtocolHeaderTargetDestinationAddresses,
+		echoListener.Addr().String())
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	lookupGeoIP := func(string) common.GeoIPData {
+		return common.GeoIPData{Country: testClientRegion}
+	}
+
+	params, err := parameters.NewParameters(nil)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	receiver := newTestProxyEventReceiver(
+		expectedTLSClientHelloFragmented,
+		expectedTLSClientHelloPadding,
+		addProxyHeader,
+		testClientRegion)
+
+	maxConcurrent := numClients * numConnectionsPerClient * 2
+	if sharedProxyLimits {
+		proxyConfig.ProxyLimits, err = common.NewProxyLimits(&common.ProxyLimitsConfig{
+			MaxPersonalClients:               maxConcurrent,
+			PersonalUpstreamBytesPerSecond:   bytesPerSecond,
+			PersonalDownstreamBytesPerSecond: bytesPerSecond,
+		})
+		if err != nil {
+			return errors.Trace(err)
+		}
+		proxyConfig.ProxyLimitKind = ProxyLimitKindPersonal
+	} else {
+		proxyConfig.MaxConcurrent = &maxConcurrent
+		proxyConfig.LimitUpstreamBytesPerSecond = bytesPerSecond
+		proxyConfig.LimitDownstreamBytesPerSecond = bytesPerSecond
+	}
+
+	proxyConfig.EmitActivity = true
+	proxyConfig.AllowBogons = true
+	proxyConfig.EnableDebugLogs = true
+
+	proxy, err := NewProxy(
+		proxyConfig,
+		lookupGeoIP,
+		receiver)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	serverGroup.Go(func() error {
+		return proxy.Run(serverCtx)
+	})
+
+	select {
+	case <-receiver.listening:
+	case <-ctx.Done():
+		return errors.Trace(ctx.Err())
+	}
+
+	err = proxy.SetLimits(
+		nil,
+		1<<30,
+		1<<30)
+	if sharedProxyLimits {
+		if err == nil {
+			return errors.TraceNew("unexpected SetLimits success")
+		}
+	} else if err != nil {
+		return errors.Trace(err)
+	}
+
+	newClientConfig := func() *ClientConfig {
+		return &ClientConfig{
+			Logger: testutils.NewTestLogger(),
+			TCPDialer: func(ctx context.Context, addr string) (net.Conn, error) {
+				conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+				if err != nil {
+					return nil, errors.Trace(err)
+				}
+				return newPaddingCheckerConn(conn), nil
+			},
+			TLSDialer: func(
+				ctx context.Context,
+				underlyingConn net.Conn,
+				tlsProfile string,
+				randomizedTLSProfileSeed *prng.Seed,
+				sni string,
+				fragmentClientHello bool,
+				tlsPadding int,
+				passthroughMessage []byte,
+				verifyPin string,
+				verifyServerName string) (net.Conn, error) {
+
+				return dialTLS(
+					params,
+					ctx,
+					underlyingConn,
+					tlsProfile,
+					randomizedTLSProfileSeed,
+					sni,
+					fragmentClientHello,
+					tlsPadding,
+					passthroughMessage,
+					verifyPin,
+					verifyServerName)
+			},
+			SponsorID:         testSponsorID,
+			ClientPlatform:    testClientPlatform,
+			ClientBuildRev:    testClientBuildRev,
+			DeviceRegion:      testDeviceRegion,
+			SessionID:         prng.HexString(protocol.PSIPHON_API_CLIENT_SESSION_ID_LENGTH),
+			ProxyEntryTracker: testProxyEntryTracker,
+			ProxyEntry:        proxyEntry,
+		}
+	}
+
+	clients := make([]*Client, numClients)
+	for i := 0; i < numClients; i++ {
+		client, err := NewClient(newClientConfig())
+		if err != nil {
+			return errors.Trace(err)
+		}
+		clients[i] = client
+	}
+
+	// All clients reuse the same dialer, but the probabilities are deterministic: 0.0 or 1.0.
+	tlsFragmentClientHello := prng.FlipWeightedCoin(
+		clients[0].GetRecommendedFragmentClientHelloProbability())
+
+	tlsPadding := 0
+	if prng.FlipWeightedCoin(clients[0].GetRecommendedTLSPaddingProbability()) {
+		tlsPadding = prng.Range(
+			clients[0].GetRecommendedMinTLSPadding(),
+			clients[0].GetRecommendedMaxTLSPadding())
+	}
+
+	// Exercise dynamic rate limit changes
+
+	var updateLimitsOnce sync.Once
+	var updateLimitsErr error
+	updateLimits := func() error {
+		updateLimitsOnce.Do(func() {
+			updatedBytesPerSecond := bytesPerSecond + bytesPerSecond/2
+			if sharedProxyLimits {
+				updateLimitsErr = proxyConfig.ProxyLimits.SetPersonalLimits(
+					maxConcurrent, updatedBytesPerSecond, updatedBytesPerSecond)
+			} else {
+				updateLimitsErr = proxy.SetLimits(
+					&maxConcurrent, updatedBytesPerSecond, updatedBytesPerSecond)
+			}
+		})
+		return updateLimitsErr
+	}
+
+	clientGroup, clientCtx := errgroup.WithContext(ctx)
+	for _, client := range clients {
+		client := client
+		for i := 0; i < numConnectionsPerClient; i++ {
+			clientGroup.Go(func() error {
+				err := runLightClient(
+					clientCtx,
+					client,
+					testNetworkType,
+					testTLSProfile,
+					tlsFragmentClientHello,
+					tlsPadding,
+					echoAddress,
+					payloadSize,
+					updateLimits)
+				if err != nil {
+					return errors.Trace(err)
+				}
+				return nil
+			})
+		}
+	}
+
+	err = clientGroup.Wait()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if addProxyHeader {
+		expectedProxyProtocolHeaderCount :=
+			int64(numClients * numConnectionsPerClient)
+		proxyProtocolHeaderCount := proxyProtocolHeaderCount.Load()
+		if proxyProtocolHeaderCount != expectedProxyProtocolHeaderCount {
+			return errors.Tracef(
+				"unexpected PROXY protocol header count: %d",
+				proxyProtocolHeaderCount)
+		}
+	}
+
+	err = receiver.awaitActivityRegion(ctx)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	proxy.Pause()
+
+	_, err = clients[0].Dial(
+		ctx,
+		nil,
+		0,
+		testNetworkType,
+		testTLSProfile,
+		nil,
+		clients[0].GetRecommendedSNI(),
+		tlsFragmentClientHello,
+		tlsPadding,
+		echoAddress)
+	if err == nil {
+		return errors.TraceNew("unexpected success")
+	}
+
+	proxy.Resume()
+
+	conn, err := clients[0].Dial(
+		ctx,
+		nil,
+		0,
+		testNetworkType,
+		testTLSProfile,
+		nil,
+		clients[0].GetRecommendedSNI(),
+		tlsFragmentClientHello,
+		tlsPadding,
+		echoAddress)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	conn.Close()
+
+	cancel()
+
+	err = serverGroup.Wait()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	err = receiver.checkResults()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	return nil
+}
+
+func runLightClient(
+	ctx context.Context,
+	client *Client,
+	networkType string,
+	tlsProfile string,
+	tlsFragmentClientHello bool,
+	tlsPadding int,
+	destinationAddress string,
+	payloadSize int,
+	updateLimits func() error) error {
+
+	conn, err := client.Dial(
+		ctx,
+		nil,
+		0,
+		networkType,
+		tlsProfile,
+		nil,
+		client.GetRecommendedSNI(),
+		tlsFragmentClientHello,
+		tlsPadding,
+		destinationAddress)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	defer conn.Close()
+
+	interruptOnDone := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer interruptOnDone()
+
+	innerTLSConn := tls.Client(conn, &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true,
+	})
+
+	err = innerTLSConn.Handshake()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	payload := prng.Bytes(payloadSize)
+
+	var readWriteGroup errgroup.Group
+	echoed := make([]byte, len(payload))
+	readWriteGroup.Go(func() error {
+		_, err := innerTLSConn.Write(payload)
+		return errors.Trace(err)
+	})
+
+	readWriteGroup.Go(func() error {
+		half := len(echoed) / 2
+		_, err := io.ReadFull(innerTLSConn, echoed[:half])
+		if err != nil {
+			return errors.Trace(err)
+		}
+
+		// Invoke dynamic rate limit change while bulk relaying
+		err = updateLimits()
+		if err != nil {
+			return errors.Trace(err)
+		}
+
+		_, err = io.ReadFull(innerTLSConn, echoed[half:])
+		return errors.Trace(err)
+	})
+
+	err = readWriteGroup.Wait()
+	if ctx.Err() != nil {
+		return errors.Trace(ctx.Err())
+	}
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	if !bytes.Equal(payload, echoed) {
+		return errors.TraceNew("echo payload mismatch")
+	}
+
+	err = innerTLSConn.Close()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	paddingCheckerConn := conn.activityConn.Conn.(*paddingCheckerConn)
+	err = paddingCheckerConn.checkResults()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	return nil
+}
+
+func dialTLS(
+	params *parameters.Parameters,
+	ctx context.Context,
+	underlyingConn net.Conn,
+	tlsProfile string,
+	randomizedTLSProfileSeed *prng.Seed,
+	sni string,
+	fragmentClientHello bool,
+	tlsPadding int,
+	passthroughMessage []byte,
+	verifyPin string,
+	verifyServerName string) (net.Conn, error) {
+
+	tlsConfig := &tlsdialer.Config{
+		Parameters: params,
+		Dial: func(context.Context, string, string) (net.Conn, error) {
+			return underlyingConn, nil
+		},
+		SNIServerName:            sni,
+		VerifyServerName:         verifyServerName,
+		VerifyPins:               []string{verifyPin},
+		VerifyPinsOnly:           true,
+		TLSProfile:               tlsProfile,
+		RandomizedTLSProfileSeed: randomizedTLSProfileSeed,
+		FragmentClientHello:      fragmentClientHello,
+		TLSPadding:               tlsPadding,
+		PassthroughMessage:       passthroughMessage,
+	}
+
+	conn, err := tlsdialer.Dial(
+		ctx,
+		"tcp",
+		underlyingConn.RemoteAddr().String(),
+		tlsConfig)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	// Now that the outer TLS handshake is complete, start checking padding
+	// target range of the inner TLS handshake.
+	underlyingConn.(*common.ActivityMonitoredConn).
+		Conn.(*paddingCheckerConn).startChecking()
+
+	return conn, nil
+}
+
+func runTLSEchoServer(
+	ctx context.Context,
+	listener net.Listener,
+	config *tls.Config) error {
+
+	listener = tls.NewListener(listener, config)
+
+	mainGroup, ctx := errgroup.WithContext(ctx)
+
+	mainGroup.Go(func() error {
+		<-ctx.Done()
+		return listener.Close()
+	})
+
+	mainGroup.Go(func() error {
+		var connGroup errgroup.Group
+
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if ctx.Err() != nil {
+					return connGroup.Wait()
+				}
+				return errors.Trace(err)
+			}
+
+			connGroup.Go(func() error {
+				defer conn.Close()
+				_, err = io.Copy(conn, conn)
+				if err != nil && err != io.EOF {
+					return errors.Trace(err)
+				}
+				return nil
+			})
+		}
+	})
+
+	return errors.Trace(mainGroup.Wait())
+}
+
+type paddingCheckerConn struct {
+	net.Conn
+
+	mutex        sync.Mutex
+	enabled      bool
+	readChecked  bool
+	readBuffer   []byte
+	readErr      error
+	writeChecked bool
+	writeBuffer  []byte
+	writeErr     error
+}
+
+func newPaddingCheckerConn(conn net.Conn) *paddingCheckerConn {
+
+	return &paddingCheckerConn{
+		Conn: conn,
+	}
+}
+
+func (conn *paddingCheckerConn) Read(b []byte) (int, error) {
+	n, err := conn.Conn.Read(b)
+	if n > 0 {
+		conn.checkTLSRecordLength(false, b[:n])
+	}
+	return n, err
+}
+
+func (conn *paddingCheckerConn) Write(b []byte) (int, error) {
+	n, err := conn.Conn.Write(b)
+	if n > 0 {
+		conn.checkTLSRecordLength(true, b[:n])
+	}
+	return n, err
+}
+
+func (conn *paddingCheckerConn) checkResults() error {
+	conn.mutex.Lock()
+	defer conn.mutex.Unlock()
+
+	if !conn.readChecked || !conn.writeChecked {
+		return errors.TraceNew("checks incomplete")
+	}
+	if conn.readErr != nil {
+		return conn.readErr
+	}
+	return conn.writeErr
+}
+
+func (conn *paddingCheckerConn) startChecking() {
+	conn.mutex.Lock()
+	defer conn.mutex.Unlock()
+
+	conn.enabled = true
+}
+
+func (conn *paddingCheckerConn) checkTLSRecordLength(isWrite bool, b []byte) {
+	conn.mutex.Lock()
+	defer conn.mutex.Unlock()
+
+	if !conn.enabled {
+		return
+	}
+
+	buffer := &conn.readBuffer
+	checked := &conn.readChecked
+	checkErr := &conn.readErr
+	if isWrite {
+		buffer = &conn.writeBuffer
+		checked = &conn.writeChecked
+		checkErr = &conn.writeErr
+	}
+
+	// Limitation: only checks the first read (proxy padding) and first write
+	// (client padding).
+	if *checked {
+		return
+	}
+
+	// Buffer in case the net.Conn read/write isn't the full TLS record.
+	*buffer = append(*buffer, b...)
+	if len(*buffer) < 5 {
+		return
+	}
+
+	recordSize := int(binary.BigEndian.Uint16((*buffer)[3:5]))
+	if len(*buffer) < 5+recordSize {
+		return
+	}
+
+	// If the initial inner payload already exceeds the padding target,
+	// lightConn sends stopPadding instead of adding padding, and the TLS record
+	// may exceed paddingMaxTargetSize.
+	if recordSize < paddingMinTargetSize {
+		*checkErr = errors.Tracef(
+			"TLS record size %d below padding target minimum %d",
+			recordSize,
+			paddingMinTargetSize)
+	}
+
+	*checked = true
+	*buffer = nil
+}
+
+type testProxyEventReceiver struct {
+	listening                        chan struct{}
+	listeningOnce                    sync.Once
+	mutex                            sync.Mutex
+	statsErr                         error
+	successfulConnectionStats        int
+	expectedTLSClientHelloFragmented bool
+	expectedTLSClientHelloPadding    int
+	expectedProxyProtocolHeaderAdded bool
+	expectedActivityRegion           string
+	activityRegionSeen               chan struct{}
+	activityRegionSeenOnce           sync.Once
+}
+
+func newTestProxyEventReceiver(
+	expectedTLSClientHelloFragmented bool,
+	expectedTLSClientHelloPadding int,
+	expectedProxyProtocolHeaderAdded bool,
+	expectedActivityRegion string) *testProxyEventReceiver {
+
+	return &testProxyEventReceiver{
+		listening:                        make(chan struct{}),
+		expectedTLSClientHelloFragmented: expectedTLSClientHelloFragmented,
+		expectedTLSClientHelloPadding:    expectedTLSClientHelloPadding,
+		expectedProxyProtocolHeaderAdded: expectedProxyProtocolHeaderAdded,
+		expectedActivityRegion:           expectedActivityRegion,
+		activityRegionSeen:               make(chan struct{}),
+	}
+}
+
+func (r *testProxyEventReceiver) Listening(address string) {
+	r.listeningOnce.Do(func() {
+		close(r.listening)
+	})
+	fmt.Printf("[Listening] %s\n", address)
+}
+
+func (r *testProxyEventReceiver) Paused() {
+	fmt.Printf("[Paused]\n")
+}
+
+func (r *testProxyEventReceiver) Resumed() {
+	fmt.Printf("[Resumed]\n")
+}
+
+func (r *testProxyEventReceiver) Accepted() {
+	fmt.Printf("[Accepted]\n")
+}
+
+func (r *testProxyEventReceiver) Rejected() {
+	fmt.Printf("[Rejected]\n")
+}
+
+func (r *testProxyEventReceiver) Activity(stats *ActivityStats) {
+	if r.expectedActivityRegion != "" {
+		regionStats, ok := stats.RegionActivity[r.expectedActivityRegion]
+		if ok &&
+			(regionStats.BytesUp > 0 ||
+				regionStats.BytesDown > 0 ||
+				regionStats.CurrentConnectionCount > 0) {
+			r.activityRegionSeenOnce.Do(func() {
+				close(r.activityRegionSeen)
+			})
+		}
+	}
+
+	const activityFormat = `[Activity] proxyID: %s, providerID: %s, ` +
+		`bytesUp: %d, bytesDown: %d, bytesDuration: %s, ` +
+		`currentConnectionCount: %d` + "\n"
+
+	fmt.Printf(
+		activityFormat,
+		stats.ProxyID,
+		stats.ProxyProviderID,
+		stats.BytesUp,
+		stats.BytesDown,
+		stats.BytesDuration,
+		stats.CurrentConnectionCount)
+}
+
+func (r *testProxyEventReceiver) awaitActivityRegion(ctx context.Context) error {
+	if r.expectedActivityRegion == "" {
+		return nil
+	}
+
+	select {
+	case <-r.activityRegionSeen:
+		return nil
+	case <-ctx.Done():
+		return errors.Tracef(
+			"missing activity for region %s: %v",
+			r.expectedActivityRegion,
+			ctx.Err())
+	}
+}
+
+func (r *testProxyEventReceiver) Connection(stats *ConnectionStats) {
+	r.checkConnectionStats(stats)
+
+	const connectionFormat = `[Connection] proxyID: %s, ` +
+		`proxyConnectionNum: %d, sponsorID: %s, platform: %s, ` +
+		`buildRev: %s, deviceRegion: %s, sessionID: %s, ` +
+		`tracker: %d, networkType: %s, clientConnectionNum: %d, ` +
+		`destination: %s, tlsProfile: %s, sni: %s, ` +
+		`tlsClientHelloFragmented: %t, tlsClientHelloPadding: %d, ` +
+		`tlsDidResume: %t, ` +
+		`clientTCPDuration: %s, clientTLSDuration: %s, ` +
+		`completedTCP: %s, completedTLS: %s, completedLightHeader: %s, ` +
+		`completedUpstreamDNS: %s, completedUpstreamTCP: %s, upstreamDNSCached: %v, ` +
+		`proxyProtocolHeaderAdded: %t, proxyProtocolHeaderReplaced: %t, ` +
+		`bytesRead: %d, bytesWritten: %d, ` +
+		`failure: %s` + "\n"
+
+	fmt.Printf(
+		connectionFormat,
+		stats.ProxyID,
+		stats.ProxyConnectionNum,
+		stats.SponsorID,
+		stats.ClientPlatform,
+		stats.ClientBuildRev,
+		stats.DeviceRegion,
+		stats.SessionID,
+		stats.ProxyEntryTracker,
+		stats.NetworkType,
+		stats.ClientConnectionNum,
+		stats.DestinationAddress,
+		stats.TLSProfile,
+		stats.SNI,
+		stats.TLSClientHelloFragmented,
+		stats.TLSClientHelloPadding,
+		stats.TLSDidResume,
+		stats.ClientTCPDuration,
+		stats.ClientTLSDuration,
+		stats.ProxyCompletedTCP.Format(time.RFC3339Nano),
+		stats.ProxyCompletedTLS.Format(time.RFC3339Nano),
+		stats.ProxyCompletedLightHeader.Format(time.RFC3339Nano),
+		stats.ProxyCompletedUpstreamDNS.Format(time.RFC3339Nano),
+		stats.ProxyCompletedUpstreamTCP.Format(time.RFC3339Nano),
+		stats.UpstreamDNSCached,
+		stats.ProxyProtocolHeaderAdded,
+		stats.ProxyProtocolHeaderReplaced,
+		stats.BytesRead,
+		stats.BytesWritten,
+		stats.Failure)
+}
+
+func (r *testProxyEventReceiver) checkConnectionStats(stats *ConnectionStats) {
+	if stats.Failure != "" {
+		return
+	}
+
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	r.successfulConnectionStats++
+
+	if r.statsErr != nil {
+		return
+	}
+
+	if stats.TLSClientHelloFragmented != r.expectedTLSClientHelloFragmented {
+		r.statsErr = errors.TraceNew("unexpected TLSClientHelloFragmented")
+		return
+	}
+
+	if stats.TLSClientHelloPadding != r.expectedTLSClientHelloPadding {
+		r.statsErr = errors.TraceNew("unexpected TLSClientHelloPadding")
+		return
+	}
+
+	if stats.ProxyProtocolHeaderAdded != r.expectedProxyProtocolHeaderAdded {
+		r.statsErr = errors.TraceNew("unexpected ProxyProtocolHeaderAdded")
+		return
+	}
+
+	if stats.ProxyProtocolHeaderReplaced {
+		r.statsErr = errors.TraceNew("unexpected ProxyProtocolHeaderReplaced")
+	}
+}
+
+func (r *testProxyEventReceiver) checkResults() error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	if r.statsErr != nil {
+		return r.statsErr
+	}
+
+	if r.successfulConnectionStats == 0 {
+		return errors.TraceNew("missing successful connection stats")
+	}
+
+	return nil
+}
+
+func (r *testProxyEventReceiver) IrregularConnection(_ string, _ common.GeoIPData, irregularity string) {
+	fmt.Printf("[IrregularConnection] %s\n", irregularity)
+}
+
+func (r *testProxyEventReceiver) DebugLog(_ string, message string) {
+}
+
+func (r *testProxyEventReceiver) InfoLog(_ string, message string) {
+	fmt.Printf("[InfoLog] %s\n", message)
+}
+
+func (r *testProxyEventReceiver) WarningLog(_ string, message string) {
+	fmt.Printf("[WarningLog] %s\n", message)
+}
+
+func (r *testProxyEventReceiver) ErrorLog(_ string, message string) {
+	fmt.Printf("[ErrorLog] %s\n", message)
+}
+
+func TestEncodeTLSProfile(t *testing.T) {
+
+	if encodeTLSProfile("unknown-tls-profile") != 0 {
+		t.Error("unexpected unknown TLS profile encoding")
+	}
+
+	for _, tlsProfile := range protocol.SupportedTLSProfiles {
+
+		encoded := encodeTLSProfile(tlsProfile)
+
+		if encoded == 0 {
+			t.Error("unexpected supported TLS profile encoding")
+		}
+
+		if decodeTLSProfile(encoded) != tlsProfile {
+			t.Error("unexpected supported TLS profile decoding")
+		}
+	}
+}

@@ -1,0 +1,466 @@
+// Copyright 2012 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package agent
+
+import (
+	"crypto"
+	"crypto/rand"
+	"fmt"
+	"io"
+	"math/big"
+	pseudorand "math/rand"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/crypto/ssh"
+)
+
+func TestServer(t *testing.T) {
+	c1, c2, err := netPipe()
+	if err != nil {
+		t.Fatalf("netPipe: %v", err)
+	}
+	defer c1.Close()
+	defer c2.Close()
+	client := NewClient(c1)
+
+	go ServeAgent(NewKeyring(), c2)
+
+	testAgentInterface(t, client, testPrivateKeys["rsa"], nil, 0)
+}
+
+func TestLockServer(t *testing.T) {
+	testLockAgent(NewKeyring(), t)
+}
+
+func TestSetupForwardAgent(t *testing.T) {
+	a, b, err := netPipe()
+	if err != nil {
+		t.Fatalf("netPipe: %v", err)
+	}
+
+	defer a.Close()
+	defer b.Close()
+
+	_, socket, cleanup := startOpenSSHAgent(t)
+	defer cleanup()
+
+	serverConf := ssh.ServerConfig{
+		NoClientAuth: true,
+	}
+	serverConf.AddHostKey(testSigners["rsa"])
+	incoming := make(chan *ssh.ServerConn, 1)
+	go func() {
+		conn, _, _, err := ssh.NewServerConn(a, &serverConf)
+		incoming <- conn
+		if err != nil {
+			t.Errorf("NewServerConn error: %v", err)
+			return
+		}
+	}()
+
+	conf := ssh.ClientConfig{
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+	conn, chans, reqs, err := ssh.NewClientConn(b, "", &conf)
+	if err != nil {
+		t.Fatalf("NewClientConn: %v", err)
+	}
+	client := ssh.NewClient(conn, chans, reqs)
+
+	if err := ForwardToRemote(client, socket); err != nil {
+		t.Fatalf("SetupForwardAgent: %v", err)
+	}
+	server := <-incoming
+	if server == nil {
+		t.Fatal("Unable to get server")
+	}
+	ch, reqs, err := server.OpenChannel(channelType, nil)
+	if err != nil {
+		t.Fatalf("OpenChannel(%q): %v", channelType, err)
+	}
+	go ssh.DiscardRequests(reqs)
+
+	agentClient := NewClient(ch)
+	testAgentInterface(t, agentClient, testPrivateKeys["rsa"], nil, 0)
+	conn.Close()
+}
+
+func TestForwardAgentDiscardsStderr(t *testing.T) {
+	a, b, err := netPipe()
+	if err != nil {
+		t.Fatalf("netPipe: %v", err)
+	}
+	defer a.Close()
+	defer b.Close()
+
+	serverConf := ssh.ServerConfig{
+		NoClientAuth: true,
+	}
+	serverConf.AddHostKey(testSigners["rsa"])
+	incoming := make(chan *ssh.ServerConn, 1)
+	go func() {
+		conn, _, _, err := ssh.NewServerConn(a, &serverConf)
+		incoming <- conn
+		if err != nil {
+			t.Errorf("NewServerConn error: %v", err)
+			return
+		}
+	}()
+
+	conf := ssh.ClientConfig{
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+	conn, chans, reqs, err := ssh.NewClientConn(b, "", &conf)
+	if err != nil {
+		t.Fatalf("NewClientConn: %v", err)
+	}
+	client := ssh.NewClient(conn, chans, reqs)
+	defer client.Close()
+
+	if err := ForwardToAgent(client, NewKeyring()); err != nil {
+		t.Fatalf("ForwardToAgent: %v", err)
+	}
+
+	server := <-incoming
+	if server == nil {
+		t.Fatal("Unable to get server")
+	}
+	defer server.Close()
+
+	ch, chanReqs, err := server.OpenChannel(channelType, nil)
+	if err != nil {
+		t.Fatalf("OpenChannel(%q): %v", channelType, err)
+	}
+	go ssh.DiscardRequests(chanReqs)
+	defer ch.Close()
+
+	// Write more than the default channel receive window (2 MiB) on the
+	// stderr stream. If the forwarder did not drain it the remote window
+	// would be exhausted and this write would block forever, because no
+	// window-adjust messages are emitted for an extended stream that is
+	// never read.
+	const payload = 4 * 1024 * 1024
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 32*1024)
+		remaining := payload
+		for remaining > 0 {
+			n := len(buf)
+			if remaining < n {
+				n = remaining
+			}
+			w, err := ch.Stderr().Write(buf[:n])
+			if err != nil {
+				done <- err
+				return
+			}
+			remaining -= w
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("write to stderr: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("write to stderr blocked: ForwardToAgent is not draining channel.Stderr()")
+	}
+
+	// The agent must still be reachable on the main stream after the
+	// stderr traffic.
+	if _, err := NewClient(ch).List(); err != nil {
+		t.Fatalf("List after stderr flood: %v", err)
+	}
+}
+
+func TestV1ProtocolMessages(t *testing.T) {
+	c1, c2, err := netPipe()
+	if err != nil {
+		t.Fatalf("netPipe: %v", err)
+	}
+	defer c1.Close()
+	defer c2.Close()
+	c := NewClient(c1)
+
+	go ServeAgent(NewKeyring(), c2)
+
+	testV1ProtocolMessages(t, c.(*client))
+}
+
+func testV1ProtocolMessages(t *testing.T, c *client) {
+	reply, err := c.call([]byte{agentRequestV1Identities})
+	if err != nil {
+		t.Fatalf("v1 request all failed: %v", err)
+	}
+	if msg, ok := reply.(*agentV1IdentityMsg); !ok || msg.Numkeys != 0 {
+		t.Fatalf("invalid request all response: %#v", reply)
+	}
+
+	reply, err = c.call([]byte{agentRemoveAllV1Identities})
+	if err != nil {
+		t.Fatalf("v1 remove all failed: %v", err)
+	}
+	if _, ok := reply.(*successAgentMsg); !ok {
+		t.Fatalf("invalid remove all response: %#v", reply)
+	}
+}
+
+func verifyKey(sshAgent Agent) error {
+	keys, err := sshAgent.List()
+	if err != nil {
+		return fmt.Errorf("listing keys: %v", err)
+	}
+
+	if len(keys) != 1 {
+		return fmt.Errorf("bad number of keys found. expected 1, got %d", len(keys))
+	}
+
+	buf := make([]byte, 128)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Errorf("rand: %v", err)
+	}
+
+	sig, err := sshAgent.Sign(keys[0], buf)
+	if err != nil {
+		return fmt.Errorf("sign: %v", err)
+	}
+
+	if err := keys[0].Verify(buf, sig); err != nil {
+		return fmt.Errorf("verify: %v", err)
+	}
+	return nil
+}
+
+func addKeyToAgent(key crypto.PrivateKey) error {
+	sshAgent := NewKeyring()
+	if err := sshAgent.Add(AddedKey{PrivateKey: key}); err != nil {
+		return fmt.Errorf("add: %v", err)
+	}
+	return verifyKey(sshAgent)
+}
+
+func TestParseDSAKeyHugeQ(t *testing.T) {
+	P := new(big.Int).Lsh(big.NewInt(1), 1023)
+	Q := new(big.Int).Lsh(big.NewInt(1), 20000) // very large
+	// G and Y: dummy values, just needs to be < P to pass that specific check.
+	G := big.NewInt(2)
+	Y := big.NewInt(5)
+
+	req := ssh.Marshal(dsaKeyMsg{
+		Type: ssh.InsecureKeyAlgoDSA,
+		P:    P,
+		Q:    Q,
+		G:    G,
+		Y:    Y,
+		X:    big.NewInt(1),
+	})
+
+	_, err := parseDSAKey(req)
+	if err == nil {
+		t.Fatal("parseDSAKey accepted a DSA key with large Q")
+	}
+
+	expectedError := "unsupported DSA sub-prime size"
+	if !strings.Contains(err.Error(), expectedError) {
+		t.Errorf("unexpected error message: got %q, want substring %q", err.Error(), expectedError)
+	}
+}
+
+func TestParseDSAKeyYOutOfRange(t *testing.T) {
+	// Valid 1024/160 parameters (values don't need to be a real DSA group,
+	// they only need to pass the checkDSAParams bit-length checks and the
+	// G < P / G > 0 checks).
+	P := new(big.Int).Lsh(big.NewInt(1), 1023)
+	P.SetBit(P, 0, 1) // make P odd so it can pass as a prime candidate shape
+	Q := new(big.Int).Lsh(big.NewInt(1), 159)
+	Q.SetBit(Q, 0, 1)
+	G := big.NewInt(2)
+
+	for _, tc := range []struct {
+		name string
+		Y    *big.Int
+	}{
+		{"Y_zero", big.NewInt(0)},
+		{"Y_negative", big.NewInt(-1)},
+		{"Y_equals_P", new(big.Int).Set(P)},
+		{"Y_greater_than_P", new(big.Int).Add(P, big.NewInt(1))},
+		{"Y_much_greater_than_P", new(big.Int).Lsh(big.NewInt(1), 20000)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := ssh.Marshal(dsaKeyMsg{
+				Type: ssh.InsecureKeyAlgoDSA,
+				P:    P,
+				Q:    Q,
+				G:    G,
+				Y:    tc.Y,
+				X:    big.NewInt(1),
+			})
+
+			_, err := parseDSAKey(req)
+			if err == nil {
+				t.Fatalf("parseDSAKey accepted a DSA key with Y=%s (P=%s)", tc.Y, P)
+			}
+			expectedError := "DSA public value Y out of range"
+			if !strings.Contains(err.Error(), expectedError) {
+				t.Errorf("unexpected error message: got %q, want substring %q", err.Error(), expectedError)
+			}
+		})
+	}
+}
+
+func TestKeyTypes(t *testing.T) {
+	for k, v := range testPrivateKeys {
+		if err := addKeyToAgent(v); err != nil {
+			t.Errorf("error adding key type %s, %v", k, err)
+		}
+		if err := addCertToAgentSock(v, nil); err != nil {
+			t.Errorf("error adding key type %s, %v", k, err)
+		}
+	}
+}
+
+func addCertToAgentSock(key crypto.PrivateKey, cert *ssh.Certificate) error {
+	a, b, err := netPipe()
+	if err != nil {
+		return err
+	}
+	agentServer := NewKeyring()
+	go ServeAgent(agentServer, a)
+
+	agentClient := NewClient(b)
+	if err := agentClient.Add(AddedKey{PrivateKey: key, Certificate: cert}); err != nil {
+		return fmt.Errorf("add: %v", err)
+	}
+	return verifyKey(agentClient)
+}
+
+func addCertToAgent(key crypto.PrivateKey, cert *ssh.Certificate) error {
+	sshAgent := NewKeyring()
+	if err := sshAgent.Add(AddedKey{PrivateKey: key, Certificate: cert}); err != nil {
+		return fmt.Errorf("add: %v", err)
+	}
+	return verifyKey(sshAgent)
+}
+
+func TestCertTypes(t *testing.T) {
+	for keyType, key := range testPublicKeys {
+		cert := &ssh.Certificate{
+			ValidPrincipals: []string{"gopher1"},
+			ValidAfter:      0,
+			ValidBefore:     ssh.CertTimeInfinity,
+			Key:             key,
+			Serial:          1,
+			CertType:        ssh.UserCert,
+			SignatureKey:    testPublicKeys["rsa"],
+			Permissions: ssh.Permissions{
+				CriticalOptions: map[string]string{},
+				Extensions:      map[string]string{},
+			},
+		}
+		if err := cert.SignCert(rand.Reader, testSigners["rsa"]); err != nil {
+			t.Fatalf("signcert: %v", err)
+		}
+		if err := addCertToAgent(testPrivateKeys[keyType], cert); err != nil {
+			t.Fatalf("%v", err)
+		}
+		if err := addCertToAgentSock(testPrivateKeys[keyType], cert); err != nil {
+			t.Fatalf("%v", err)
+		}
+	}
+}
+
+func TestParseConstraints(t *testing.T) {
+	// Test LifetimeSecs
+	var msg = constrainLifetimeAgentMsg{pseudorand.Uint32()}
+	lifetimeSecs, _, _, err := parseConstraints(ssh.Marshal(msg))
+	if err != nil {
+		t.Fatalf("parseConstraints: %v", err)
+	}
+	if lifetimeSecs != msg.LifetimeSecs {
+		t.Errorf("got lifetime %v, want %v", lifetimeSecs, msg.LifetimeSecs)
+	}
+
+	// Test ConfirmBeforeUse
+	_, confirmBeforeUse, _, err := parseConstraints([]byte{agentConstrainConfirm})
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if !confirmBeforeUse {
+		t.Error("got comfirmBeforeUse == false")
+	}
+
+	// Test ConstraintExtensions
+	var data []byte
+	var expect []ConstraintExtension
+	for i := 0; i < 10; i++ {
+		var ext = ConstraintExtension{
+			ExtensionName:    fmt.Sprintf("name%d", i),
+			ExtensionDetails: []byte(fmt.Sprintf("details: %d", i)),
+		}
+		expect = append(expect, ext)
+		if i%2 == 0 {
+			data = append(data, agentConstrainExtension)
+		} else {
+			data = append(data, agentConstrainExtensionV00)
+		}
+		data = append(data, ssh.Marshal(ext)...)
+	}
+	_, _, extensions, err := parseConstraints(data)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if !reflect.DeepEqual(expect, extensions) {
+		t.Errorf("got extension %v, want %v", extensions, expect)
+	}
+
+	// Test Malformed Constraint
+	_, _, _, err = parseConstraints([]byte{1})
+	if err != io.ErrUnexpectedEOF {
+		t.Errorf("got %v, want %v", err, io.ErrUnexpectedEOF)
+	}
+
+	// Test Unknown Constraint
+	_, _, _, err = parseConstraints([]byte{128})
+	if err == nil || !strings.Contains(err.Error(), "unknown constraint") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParseEd25519KeyShortPanic(t *testing.T) {
+	msg := ssh.Marshal(ed25519KeyMsg{
+		Type: ssh.KeyAlgoED25519,
+		Pub:  []byte{1, 2, 3},
+		Priv: []byte{1, 2, 3, 4, 5},
+	})
+
+	a, b, err := netPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	defer b.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- ServeAgent(NewKeyring(), a) }()
+
+	c := NewClient(b)
+	_, err = c.(*client).call(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := c.List()
+	if err != nil {
+		t.Fatalf("agent died: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Error("short ed25519 key was accepted into keyring")
+	}
+}

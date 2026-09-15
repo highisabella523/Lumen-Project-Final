@@ -1,0 +1,720 @@
+# filippo.io/bigmod v0.0.1
+## explicit; go 1.20
+filippo.io/bigmod
+# filippo.io/edwards25519 v1.2.0
+## explicit; go 1.24.0
+filippo.io/edwards25519
+filippo.io/edwards25519/field
+# filippo.io/keygen v0.0.0-20230306160926-5201437acf8e
+## explicit; go 1.20
+filippo.io/keygen
+# github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96
+## explicit
+github.com/AndreasBriese/bbloom
+# github.com/Jigsaw-Code/outline-sdk v0.0.16
+## explicit; go 1.20
+github.com/Jigsaw-Code/outline-sdk/internal/slicepool
+github.com/Jigsaw-Code/outline-sdk/transport
+github.com/Jigsaw-Code/outline-sdk/transport/shadowsocks
+# github.com/Jigsaw-Code/outline-ss-server v1.8.0
+## explicit; go 1.21
+github.com/Jigsaw-Code/outline-ss-server/net
+github.com/Jigsaw-Code/outline-ss-server/service
+github.com/Jigsaw-Code/outline-ss-server/service/metrics
+# github.com/Psiphon-Inc/rotate-safe-writer v0.0.0-20210303140923-464a7a37606e
+## explicit
+github.com/Psiphon-Inc/rotate-safe-writer
+# github.com/Psiphon-Inc/uds-ipc v1.0.1
+## explicit; go 1.24.0
+github.com/Psiphon-Inc/uds-ipc
+# github.com/Psiphon-Labs/bolt v0.0.0-20260624144735-04fba30caf38
+## explicit; go 1.12
+github.com/Psiphon-Labs/bolt
+# github.com/Psiphon-Labs/consistent v0.0.0-20240322131436-20aaa4e05737
+## explicit; go 1.9
+github.com/Psiphon-Labs/consistent
+# github.com/Psiphon-Labs/covert-dtls v0.0.0-20260423180104-2d3b15cbc8be
+## explicit; go 1.24.0
+github.com/Psiphon-Labs/covert-dtls/pkg/fingerprints
+github.com/Psiphon-Labs/covert-dtls/pkg/mimicry
+github.com/Psiphon-Labs/covert-dtls/pkg/randomize
+github.com/Psiphon-Labs/covert-dtls/pkg/utils
+# github.com/Psiphon-Labs/goptlib v0.0.0-20200406165125-c0e32a7a3464
+## explicit
+github.com/Psiphon-Labs/goptlib
+# github.com/Psiphon-Labs/pion-ice/v4 v4.0.0-20260423180031-37d6e92d021f
+## explicit; go 1.24.0
+github.com/Psiphon-Labs/pion-ice/v4
+github.com/Psiphon-Labs/pion-ice/v4/internal/atomic
+github.com/Psiphon-Labs/pion-ice/v4/internal/fakenet
+github.com/Psiphon-Labs/pion-ice/v4/internal/netutil
+github.com/Psiphon-Labs/pion-ice/v4/internal/stun
+github.com/Psiphon-Labs/pion-ice/v4/internal/taskloop
+# github.com/Psiphon-Labs/pion-webrtc/v4 v4.0.0-20260423180049-7ff453f9681a
+## explicit; go 1.24.0
+github.com/Psiphon-Labs/pion-webrtc/v4
+github.com/Psiphon-Labs/pion-webrtc/v4/internal/fmtp
+github.com/Psiphon-Labs/pion-webrtc/v4/internal/mux
+github.com/Psiphon-Labs/pion-webrtc/v4/internal/util
+github.com/Psiphon-Labs/pion-webrtc/v4/pkg/media
+github.com/Psiphon-Labs/pion-webrtc/v4/pkg/rtcerr
+# github.com/Psiphon-Labs/psiphon-tls v0.0.0-20260612202619-4944f00a8304
+## explicit; go 1.26
+github.com/Psiphon-Labs/psiphon-tls
+github.com/Psiphon-Labs/psiphon-tls/internal/boring
+github.com/Psiphon-Labs/psiphon-tls/internal/boring/sig
+github.com/Psiphon-Labs/psiphon-tls/internal/constanttime
+github.com/Psiphon-Labs/psiphon-tls/internal/entropy
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/aes
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/aes/gcm
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/alias
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/check
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/drbg
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/hkdf
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/hmac
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/sha256
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/sha3
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/sha512
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/subtle
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/tls12
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140/tls13
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140deps/byteorder
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140deps/cpu
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140deps/godebug
+github.com/Psiphon-Labs/psiphon-tls/internal/fips140tls
+github.com/Psiphon-Labs/psiphon-tls/internal/impl
+github.com/Psiphon-Labs/psiphon-tls/internal/sysrand
+# github.com/Psiphon-Labs/quic-go v0.0.0-20250527153145-79fe45fb83b1
+## explicit; go 1.23
+github.com/Psiphon-Labs/quic-go
+github.com/Psiphon-Labs/quic-go/http3
+github.com/Psiphon-Labs/quic-go/internal/ackhandler
+github.com/Psiphon-Labs/quic-go/internal/congestion
+github.com/Psiphon-Labs/quic-go/internal/flowcontrol
+github.com/Psiphon-Labs/quic-go/internal/handshake
+github.com/Psiphon-Labs/quic-go/internal/protocol
+github.com/Psiphon-Labs/quic-go/internal/qerr
+github.com/Psiphon-Labs/quic-go/internal/qtls
+github.com/Psiphon-Labs/quic-go/internal/utils
+github.com/Psiphon-Labs/quic-go/internal/utils/linkedlist
+github.com/Psiphon-Labs/quic-go/internal/utils/ringbuffer
+github.com/Psiphon-Labs/quic-go/internal/wire
+github.com/Psiphon-Labs/quic-go/logging
+github.com/Psiphon-Labs/quic-go/quicvarint
+# github.com/Psiphon-Labs/utls v1.1.1-0.20260729134728-7a1fc711853d
+## explicit; go 1.24
+github.com/Psiphon-Labs/utls
+github.com/Psiphon-Labs/utls/dicttls
+github.com/Psiphon-Labs/utls/internal/boring
+github.com/Psiphon-Labs/utls/internal/byteorder
+github.com/Psiphon-Labs/utls/internal/fips140tls
+github.com/Psiphon-Labs/utls/internal/helper
+github.com/Psiphon-Labs/utls/internal/hkdf
+github.com/Psiphon-Labs/utls/internal/hpke
+github.com/Psiphon-Labs/utls/internal/quicvarint
+github.com/Psiphon-Labs/utls/internal/quicvarint/protocol
+github.com/Psiphon-Labs/utls/internal/tls12
+github.com/Psiphon-Labs/utls/internal/tls13
+# github.com/andybalholm/brotli v1.1.1
+## explicit; go 1.13
+github.com/andybalholm/brotli
+github.com/andybalholm/brotli/matchfinder
+# github.com/armon/go-proxyproto v0.0.0-20180202201750-5b7edb60ff5f
+## explicit
+github.com/armon/go-proxyproto
+# github.com/axiomhq/hyperloglog v0.2.6
+## explicit; go 1.23
+github.com/axiomhq/hyperloglog
+# github.com/bifurcation/mint v0.0.0-20180306135233-198357931e61
+## explicit
+github.com/bifurcation/mint
+github.com/bifurcation/mint/syntax
+# github.com/bits-and-blooms/bitset v1.10.0
+## explicit; go 1.16
+github.com/bits-and-blooms/bitset
+# github.com/bits-and-blooms/bloom/v3 v3.6.0
+## explicit; go 1.16
+github.com/bits-and-blooms/bloom/v3
+# github.com/cespare/xxhash v1.1.0
+## explicit
+github.com/cespare/xxhash
+# github.com/cespare/xxhash/v2 v2.3.0
+## explicit; go 1.11
+# github.com/cheekybits/genny v0.0.0-20170328200008-9127e812e1e9
+## explicit
+github.com/cheekybits/genny/generic
+# github.com/cognusion/go-cache-lru v0.0.0-20170419142635-f73e2280ecea
+## explicit
+github.com/cognusion/go-cache-lru
+# github.com/davecgh/go-spew v1.1.1
+## explicit
+github.com/davecgh/go-spew/spew
+# github.com/dchest/siphash v1.2.3
+## explicit; go 1.16
+github.com/dchest/siphash
+# github.com/deckarep/golang-set v0.0.0-20171013212420-1d4478f51bed
+## explicit
+github.com/deckarep/golang-set
+# github.com/dgraph-io/badger v1.5.4-0.20180815194500-3a87f6d9c273
+## explicit
+github.com/dgraph-io/badger
+github.com/dgraph-io/badger/options
+github.com/dgraph-io/badger/protos
+github.com/dgraph-io/badger/skl
+github.com/dgraph-io/badger/table
+github.com/dgraph-io/badger/y
+# github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da
+## explicit
+github.com/dgryski/go-farm
+# github.com/dgryski/go-metro v0.0.0-20250106013310-edb8663e5e33
+## explicit
+github.com/dgryski/go-metro
+# github.com/elazarl/goproxy v0.0.0-20200809112317-0581fc3aee2d
+## explicit
+github.com/elazarl/goproxy
+# github.com/elazarl/goproxy/ext v0.0.0-20200809112317-0581fc3aee2d
+## explicit
+github.com/elazarl/goproxy/ext/auth
+# github.com/florianl/go-nfqueue v1.1.1-0.20200829120558-a2f196e98ab0
+## explicit; go 1.13
+github.com/florianl/go-nfqueue
+github.com/florianl/go-nfqueue/internal/unix
+# github.com/flynn/noise v1.0.1-0.20220214164934-d803f5c4b0f4
+## explicit; go 1.16
+github.com/flynn/noise
+# github.com/fxamacker/cbor/v2 v2.5.0
+## explicit; go 1.12
+github.com/fxamacker/cbor/v2
+# github.com/gaukas/godicttls v0.0.4
+## explicit; go 1.19
+github.com/gaukas/godicttls
+# github.com/go-logr/logr v1.4.3
+## explicit; go 1.18
+# github.com/go-ole/go-ole v1.3.0
+## explicit; go 1.12
+github.com/go-ole/go-ole
+github.com/go-ole/go-ole/oleutil
+# github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572
+## explicit; go 1.13
+github.com/go-task/slim-sprig
+# github.com/gobwas/glob v0.2.4-0.20180402141543-f00a7392b439
+## explicit
+github.com/gobwas/glob
+github.com/gobwas/glob/compiler
+github.com/gobwas/glob/match
+github.com/gobwas/glob/syntax
+github.com/gobwas/glob/syntax/ast
+github.com/gobwas/glob/syntax/lexer
+github.com/gobwas/glob/util/runes
+github.com/gobwas/glob/util/strings
+# github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da
+## explicit
+github.com/golang/groupcache/lru
+# github.com/golang/protobuf v1.5.3
+## explicit; go 1.9
+github.com/golang/protobuf/proto
+# github.com/google/go-cmp v0.7.0
+## explicit; go 1.21
+github.com/google/go-cmp/cmp
+github.com/google/go-cmp/cmp/internal/diff
+github.com/google/go-cmp/cmp/internal/flags
+github.com/google/go-cmp/cmp/internal/function
+github.com/google/go-cmp/cmp/internal/value
+# github.com/google/gopacket v1.1.19
+## explicit; go 1.12
+github.com/google/gopacket
+github.com/google/gopacket/layers
+# github.com/google/pprof v0.0.0-20211214055906-6f57359322fd
+## explicit; go 1.14
+github.com/google/pprof/profile
+# github.com/google/uuid v1.6.0
+## explicit
+github.com/google/uuid
+# github.com/grafov/m3u8 v0.0.0-20171211212457-6ab8f28ed427
+## explicit
+github.com/grafov/m3u8
+# github.com/huin/goupnp v1.3.0
+## explicit; go 1.14
+github.com/huin/goupnp
+github.com/huin/goupnp/dcps/internetgateway2
+github.com/huin/goupnp/httpu
+github.com/huin/goupnp/scpd
+github.com/huin/goupnp/soap
+github.com/huin/goupnp/ssdp
+# github.com/josharian/native v1.1.1-0.20230202152459-5c7d0dd6ab86
+## explicit; go 1.13
+github.com/josharian/native
+# github.com/kamstrup/intmap v0.5.2
+## explicit; go 1.23
+github.com/kamstrup/intmap
+# github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0
+## explicit
+github.com/kardianos/osext
+# github.com/klauspost/compress v1.18.0
+## explicit; go 1.22
+github.com/klauspost/compress
+github.com/klauspost/compress/fse
+github.com/klauspost/compress/huff0
+github.com/klauspost/compress/internal/cpuinfo
+github.com/klauspost/compress/internal/le
+github.com/klauspost/compress/internal/snapref
+github.com/klauspost/compress/zstd
+github.com/klauspost/compress/zstd/internal/xxhash
+# github.com/klauspost/cpuid/v2 v2.2.9
+## explicit; go 1.20
+github.com/klauspost/cpuid/v2
+# github.com/libp2p/go-reuseport v0.4.0
+## explicit; go 1.20
+github.com/libp2p/go-reuseport
+# github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0
+## explicit; go 1.16
+github.com/lufia/plan9stats
+# github.com/marusama/semaphore v0.0.0-20171214154724-565ffd8e868a
+## explicit
+github.com/marusama/semaphore
+# github.com/mattn/go-sqlite3 v1.14.50
+## explicit; go 1.21
+github.com/mattn/go-sqlite3
+# github.com/mdlayher/netlink v1.7.2
+## explicit; go 1.18
+github.com/mdlayher/netlink
+github.com/mdlayher/netlink/nlenc
+# github.com/mdlayher/socket v0.5.0
+## explicit; go 1.21
+github.com/mdlayher/socket
+# github.com/miekg/dns v1.1.56
+## explicit; go 1.19
+github.com/miekg/dns
+# github.com/minio/crc64nvme v1.1.1
+## explicit; go 1.22
+github.com/minio/crc64nvme
+# github.com/mitchellh/panicwrap v0.0.0-20170106182340-fce601fe5557
+## explicit
+github.com/mitchellh/panicwrap
+# github.com/mroth/weightedrand v1.0.0
+## explicit; go 1.10
+github.com/mroth/weightedrand
+# github.com/onsi/ginkgo/v2 v2.12.0
+## explicit; go 1.18
+github.com/onsi/ginkgo/v2/config
+github.com/onsi/ginkgo/v2/formatter
+github.com/onsi/ginkgo/v2/ginkgo
+github.com/onsi/ginkgo/v2/ginkgo/build
+github.com/onsi/ginkgo/v2/ginkgo/command
+github.com/onsi/ginkgo/v2/ginkgo/generators
+github.com/onsi/ginkgo/v2/ginkgo/internal
+github.com/onsi/ginkgo/v2/ginkgo/labels
+github.com/onsi/ginkgo/v2/ginkgo/outline
+github.com/onsi/ginkgo/v2/ginkgo/run
+github.com/onsi/ginkgo/v2/ginkgo/unfocus
+github.com/onsi/ginkgo/v2/ginkgo/watch
+github.com/onsi/ginkgo/v2/internal/interrupt_handler
+github.com/onsi/ginkgo/v2/internal/parallel_support
+github.com/onsi/ginkgo/v2/reporters
+github.com/onsi/ginkgo/v2/types
+# github.com/oschwald/maxminddb-golang v1.12.0
+## explicit; go 1.19
+github.com/oschwald/maxminddb-golang
+# github.com/patrickmn/go-cache v2.1.0+incompatible
+## explicit
+github.com/patrickmn/go-cache
+# github.com/pelletier/go-toml v1.9.5
+## explicit; go 1.12
+github.com/pelletier/go-toml
+# github.com/pion/datachannel v1.6.0
+## explicit; go 1.21
+github.com/pion/datachannel
+# github.com/pion/dtls/v2 v2.2.7 => ./replace/dtls
+## explicit; go 1.13
+github.com/pion/dtls/v2
+github.com/pion/dtls/v2/internal/ciphersuite
+github.com/pion/dtls/v2/internal/ciphersuite/types
+github.com/pion/dtls/v2/internal/closer
+github.com/pion/dtls/v2/internal/util
+github.com/pion/dtls/v2/pkg/crypto/ccm
+github.com/pion/dtls/v2/pkg/crypto/ciphersuite
+github.com/pion/dtls/v2/pkg/crypto/clientcertificate
+github.com/pion/dtls/v2/pkg/crypto/elliptic
+github.com/pion/dtls/v2/pkg/crypto/hash
+github.com/pion/dtls/v2/pkg/crypto/prf
+github.com/pion/dtls/v2/pkg/crypto/signature
+github.com/pion/dtls/v2/pkg/crypto/signaturehash
+github.com/pion/dtls/v2/pkg/protocol
+github.com/pion/dtls/v2/pkg/protocol/alert
+github.com/pion/dtls/v2/pkg/protocol/extension
+github.com/pion/dtls/v2/pkg/protocol/handshake
+github.com/pion/dtls/v2/pkg/protocol/recordlayer
+# github.com/pion/dtls/v3 v3.1.5
+## explicit; go 1.24.0
+github.com/pion/dtls/v3
+github.com/pion/dtls/v3/internal/ciphersuite
+github.com/pion/dtls/v3/internal/ciphersuite/types
+github.com/pion/dtls/v3/internal/closer
+github.com/pion/dtls/v3/internal/net
+github.com/pion/dtls/v3/internal/net/udp
+github.com/pion/dtls/v3/internal/util
+github.com/pion/dtls/v3/pkg/crypto/ccm
+github.com/pion/dtls/v3/pkg/crypto/ciphersuite
+github.com/pion/dtls/v3/pkg/crypto/clientcertificate
+github.com/pion/dtls/v3/pkg/crypto/elliptic
+github.com/pion/dtls/v3/pkg/crypto/fingerprint
+github.com/pion/dtls/v3/pkg/crypto/hash
+github.com/pion/dtls/v3/pkg/crypto/prf
+github.com/pion/dtls/v3/pkg/crypto/signature
+github.com/pion/dtls/v3/pkg/crypto/signaturehash
+github.com/pion/dtls/v3/pkg/net
+github.com/pion/dtls/v3/pkg/protocol
+github.com/pion/dtls/v3/pkg/protocol/alert
+github.com/pion/dtls/v3/pkg/protocol/extension
+github.com/pion/dtls/v3/pkg/protocol/handshake
+github.com/pion/dtls/v3/pkg/protocol/recordlayer
+# github.com/pion/interceptor v0.1.44
+## explicit; go 1.21.0
+github.com/pion/interceptor
+github.com/pion/interceptor/internal/ntp
+github.com/pion/interceptor/internal/rtpbuffer
+github.com/pion/interceptor/internal/sequencenumber
+github.com/pion/interceptor/pkg/flexfec
+github.com/pion/interceptor/pkg/flexfec/util
+github.com/pion/interceptor/pkg/nack
+github.com/pion/interceptor/pkg/report
+github.com/pion/interceptor/pkg/rfc8888
+github.com/pion/interceptor/pkg/stats
+github.com/pion/interceptor/pkg/twcc
+# github.com/pion/logging v0.2.4
+## explicit; go 1.20
+github.com/pion/logging
+# github.com/pion/mdns/v2 v2.1.0
+## explicit; go 1.21
+github.com/pion/mdns/v2
+# github.com/pion/randutil v0.1.0
+## explicit; go 1.14
+github.com/pion/randutil
+# github.com/pion/rtcp v1.2.16
+## explicit; go 1.21
+github.com/pion/rtcp
+# github.com/pion/rtp v1.10.1
+## explicit; go 1.21
+github.com/pion/rtp
+github.com/pion/rtp/codecs
+github.com/pion/rtp/codecs/av1/obu
+github.com/pion/rtp/codecs/vp9
+# github.com/pion/sctp v1.9.2
+## explicit; go 1.21
+github.com/pion/sctp
+# github.com/pion/sdp/v3 v3.0.18
+## explicit; go 1.24
+github.com/pion/sdp/v3
+# github.com/pion/srtp/v3 v3.0.10
+## explicit; go 1.21
+github.com/pion/srtp/v3
+# github.com/pion/stun v0.6.1
+## explicit; go 1.12
+github.com/pion/stun
+github.com/pion/stun/internal/hmac
+# github.com/pion/stun/v3 v3.1.6
+## explicit; go 1.24.0
+github.com/pion/stun/v3
+github.com/pion/stun/v3/internal/hmac
+# github.com/pion/transport/v2 v2.2.3
+## explicit; go 1.12
+github.com/pion/transport/v2
+github.com/pion/transport/v2/connctx
+github.com/pion/transport/v2/deadline
+github.com/pion/transport/v2/packetio
+github.com/pion/transport/v2/replaydetector
+github.com/pion/transport/v2/stdnet
+github.com/pion/transport/v2/udp
+github.com/pion/transport/v2/utils/xor
+# github.com/pion/transport/v4 v4.0.2
+## explicit; go 1.24.0
+github.com/pion/transport/v4
+github.com/pion/transport/v4/deadline
+github.com/pion/transport/v4/netctx
+github.com/pion/transport/v4/packetio
+github.com/pion/transport/v4/replaydetector
+github.com/pion/transport/v4/stdnet
+github.com/pion/transport/v4/utils/xor
+github.com/pion/transport/v4/vnet
+# github.com/pion/turn/v4 v4.1.4
+## explicit; go 1.21
+github.com/pion/turn/v4
+github.com/pion/turn/v4/internal/allocation
+github.com/pion/turn/v4/internal/client
+github.com/pion/turn/v4/internal/ipnet
+github.com/pion/turn/v4/internal/proto
+github.com/pion/turn/v4/internal/server
+# github.com/pires/go-proxyproto v0.11.0
+## explicit; go 1.24
+github.com/pires/go-proxyproto
+# github.com/pkg/errors v0.9.1
+## explicit
+github.com/pkg/errors
+# github.com/pmezard/go-difflib v1.0.0
+## explicit
+github.com/pmezard/go-difflib/difflib
+# github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c
+## explicit; go 1.14
+github.com/power-devops/perfstat
+# github.com/quic-go/qpack v0.4.0
+## explicit; go 1.18
+github.com/quic-go/qpack
+# github.com/refraction-networking/conjure v0.7.11-0.20240130155008-c8df96195ab2
+## explicit; go 1.18
+github.com/refraction-networking/conjure/pkg/client/assets
+github.com/refraction-networking/conjure/pkg/core
+github.com/refraction-networking/conjure/pkg/core/interfaces
+github.com/refraction-networking/conjure/pkg/dtls
+github.com/refraction-networking/conjure/pkg/phantoms
+github.com/refraction-networking/conjure/pkg/registrars/decoy-registrar
+github.com/refraction-networking/conjure/pkg/registrars/dns-registrar/dns
+github.com/refraction-networking/conjure/pkg/registrars/dns-registrar/encryption
+github.com/refraction-networking/conjure/pkg/registrars/dns-registrar/msgformat
+github.com/refraction-networking/conjure/pkg/registrars/dns-registrar/queuepacketconn
+github.com/refraction-networking/conjure/pkg/registrars/dns-registrar/remotemap
+github.com/refraction-networking/conjure/pkg/registrars/dns-registrar/requester
+github.com/refraction-networking/conjure/pkg/registrars/lib
+github.com/refraction-networking/conjure/pkg/registrars/registration
+github.com/refraction-networking/conjure/pkg/station/log
+github.com/refraction-networking/conjure/pkg/transports
+github.com/refraction-networking/conjure/pkg/transports/client
+github.com/refraction-networking/conjure/pkg/transports/connecting/dtls
+github.com/refraction-networking/conjure/pkg/transports/wrapping/min
+github.com/refraction-networking/conjure/pkg/transports/wrapping/obfs4
+github.com/refraction-networking/conjure/pkg/transports/wrapping/prefix
+github.com/refraction-networking/conjure/proto
+# github.com/refraction-networking/ed25519 v0.1.2
+## explicit; go 1.20
+github.com/refraction-networking/ed25519/edwards25519
+github.com/refraction-networking/ed25519/extra25519
+# github.com/refraction-networking/gotapdance v1.7.10
+## explicit; go 1.18
+github.com/refraction-networking/gotapdance/tapdance
+# github.com/refraction-networking/obfs4 v0.1.2
+## explicit; go 1.20
+github.com/refraction-networking/obfs4/common/csrand
+github.com/refraction-networking/obfs4/common/drbg
+github.com/refraction-networking/obfs4/common/ntor
+github.com/refraction-networking/obfs4/common/probdist
+github.com/refraction-networking/obfs4/common/replayfilter
+github.com/refraction-networking/obfs4/transports/base
+github.com/refraction-networking/obfs4/transports/obfs4
+github.com/refraction-networking/obfs4/transports/obfs4/framing
+# github.com/refraction-networking/utls v1.3.3
+## explicit; go 1.19
+github.com/refraction-networking/utls
+github.com/refraction-networking/utls/internal/helper
+# github.com/rogpeppe/go-internal v1.13.1
+## explicit; go 1.22
+# github.com/ryanuber/go-glob v0.0.0-20170128012129-256dc444b735
+## explicit
+github.com/ryanuber/go-glob
+# github.com/sergeyfrolov/bsbuffer v0.0.0-20180903213811-94e85abb8507
+## explicit
+github.com/sergeyfrolov/bsbuffer
+# github.com/shadowsocks/go-shadowsocks2 v0.1.5
+## explicit; go 1.16
+github.com/shadowsocks/go-shadowsocks2/socks
+# github.com/shirou/gopsutil/v4 v4.24.5
+## explicit; go 1.18
+github.com/shirou/gopsutil/v4/common
+github.com/shirou/gopsutil/v4/cpu
+github.com/shirou/gopsutil/v4/internal/common
+# github.com/shoenig/go-m1cpu v0.1.6
+## explicit; go 1.20
+github.com/shoenig/go-m1cpu
+# github.com/sirupsen/logrus v1.9.3
+## explicit; go 1.13
+github.com/sirupsen/logrus
+# github.com/stretchr/testify v1.11.1
+## explicit; go 1.17
+github.com/stretchr/testify/assert
+github.com/stretchr/testify/assert/yaml
+github.com/stretchr/testify/require
+github.com/stretchr/testify/suite
+# github.com/syndtr/gocapability v0.0.0-20170704070218-db04d3cc01c8
+## explicit
+github.com/syndtr/gocapability/capability
+# github.com/tailscale/netlink v1.1.1-0.20211101221916-cabfb018fe85
+## explicit; go 1.12
+github.com/tailscale/netlink
+# github.com/tklauser/go-sysconf v0.3.12
+## explicit; go 1.13
+github.com/tklauser/go-sysconf
+# github.com/tklauser/numcpus v0.6.1
+## explicit; go 1.13
+github.com/tklauser/numcpus
+# github.com/vishvananda/netlink v1.2.1-beta.2
+## explicit; go 1.12
+github.com/vishvananda/netlink/nl
+# github.com/vishvananda/netns v0.0.4
+## explicit; go 1.17
+github.com/vishvananda/netns
+# github.com/wlynxg/anet v0.0.5
+## explicit; go 1.20
+github.com/wlynxg/anet
+# github.com/x448/float16 v0.8.4
+## explicit; go 1.11
+github.com/x448/float16
+# github.com/yusufpapurcu/wmi v1.2.4
+## explicit; go 1.16
+github.com/yusufpapurcu/wmi
+# github.com/zeebo/blake3 v0.2.4
+## explicit; go 1.18
+github.com/zeebo/blake3
+github.com/zeebo/blake3/internal/alg
+github.com/zeebo/blake3/internal/alg/compress
+github.com/zeebo/blake3/internal/alg/compress/compress_pure
+github.com/zeebo/blake3/internal/alg/compress/compress_sse41
+github.com/zeebo/blake3/internal/alg/hash
+github.com/zeebo/blake3/internal/alg/hash/hash_avx2
+github.com/zeebo/blake3/internal/alg/hash/hash_pure
+github.com/zeebo/blake3/internal/consts
+github.com/zeebo/blake3/internal/utils
+# gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.5.0
+## explicit; go 1.11
+gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib
+# go.uber.org/mock v0.4.0
+## explicit; go 1.20
+# golang.org/x/crypto v0.54.0
+## explicit; go 1.25.0
+golang.org/x/crypto/blake2b
+golang.org/x/crypto/blake2s
+golang.org/x/crypto/blowfish
+golang.org/x/crypto/chacha20
+golang.org/x/crypto/chacha20poly1305
+golang.org/x/crypto/cryptobyte
+golang.org/x/crypto/cryptobyte/asn1
+golang.org/x/crypto/curve25519
+golang.org/x/crypto/hkdf
+golang.org/x/crypto/internal/alias
+golang.org/x/crypto/internal/poly1305
+golang.org/x/crypto/nacl/box
+golang.org/x/crypto/nacl/secretbox
+golang.org/x/crypto/salsa20/salsa
+golang.org/x/crypto/sha3
+# golang.org/x/exp v0.0.0-20240110193028-0dcbfd608b1e
+## explicit; go 1.20
+golang.org/x/exp/rand
+# golang.org/x/mod v0.37.0
+## explicit; go 1.25.0
+golang.org/x/mod/internal/lazyregexp
+golang.org/x/mod/module
+golang.org/x/mod/semver
+# golang.org/x/net v0.56.0
+## explicit; go 1.25.0
+golang.org/x/net/bpf
+golang.org/x/net/dns/dnsmessage
+golang.org/x/net/http/httpguts
+golang.org/x/net/http2
+golang.org/x/net/http2/hpack
+golang.org/x/net/idna
+golang.org/x/net/internal/httpcommon
+golang.org/x/net/internal/httpsfv
+golang.org/x/net/internal/iana
+golang.org/x/net/internal/socket
+golang.org/x/net/internal/socks
+golang.org/x/net/internal/timeseries
+golang.org/x/net/ipv4
+golang.org/x/net/ipv6
+golang.org/x/net/nettest
+golang.org/x/net/proxy
+golang.org/x/net/route
+golang.org/x/net/trace
+# golang.org/x/sync v0.22.0
+## explicit; go 1.25.0
+golang.org/x/sync/errgroup
+# golang.org/x/sys v0.47.0
+## explicit; go 1.25.0
+golang.org/x/sys/cpu
+golang.org/x/sys/plan9
+golang.org/x/sys/unix
+golang.org/x/sys/windows
+golang.org/x/sys/windows/registry
+# golang.org/x/term v0.45.0
+## explicit; go 1.25.0
+golang.org/x/term
+# golang.org/x/text v0.40.0
+## explicit; go 1.25.0
+golang.org/x/text/secure/bidirule
+golang.org/x/text/transform
+golang.org/x/text/unicode/bidi
+golang.org/x/text/unicode/norm
+# golang.org/x/time v0.14.0
+## explicit; go 1.24.0
+golang.org/x/time/rate
+# golang.org/x/tools v0.47.0
+## explicit; go 1.25.0
+golang.org/x/tools/go/ast/astutil
+golang.org/x/tools/go/ast/edge
+golang.org/x/tools/go/ast/inspector
+golang.org/x/tools/go/gcexportdata
+golang.org/x/tools/go/packages
+golang.org/x/tools/go/types/objectpath
+golang.org/x/tools/go/types/typeutil
+golang.org/x/tools/imports
+golang.org/x/tools/internal/aliases
+golang.org/x/tools/internal/event
+golang.org/x/tools/internal/event/core
+golang.org/x/tools/internal/event/keys
+golang.org/x/tools/internal/event/label
+golang.org/x/tools/internal/gcimporter
+golang.org/x/tools/internal/gocommand
+golang.org/x/tools/internal/gopathwalk
+golang.org/x/tools/internal/imports
+golang.org/x/tools/internal/packagesinternal
+golang.org/x/tools/internal/pkgbits
+golang.org/x/tools/internal/stdlib
+golang.org/x/tools/internal/typeparams
+golang.org/x/tools/internal/typesinternal
+golang.org/x/tools/internal/versions
+# golang.zx2c4.com/wireguard v0.0.0-20230325221338-052af4a8072b
+## explicit; go 1.20
+golang.zx2c4.com/wireguard/replay
+# golang.zx2c4.com/wireguard/windows v0.5.3
+## explicit; go 1.18
+golang.zx2c4.com/wireguard/windows/tunnel/winipcfg
+# google.golang.org/protobuf v1.36.6
+## explicit; go 1.22
+google.golang.org/protobuf/encoding/prototext
+google.golang.org/protobuf/encoding/protowire
+google.golang.org/protobuf/internal/descfmt
+google.golang.org/protobuf/internal/descopts
+google.golang.org/protobuf/internal/detrand
+google.golang.org/protobuf/internal/editiondefaults
+google.golang.org/protobuf/internal/editionssupport
+google.golang.org/protobuf/internal/encoding/defval
+google.golang.org/protobuf/internal/encoding/messageset
+google.golang.org/protobuf/internal/encoding/tag
+google.golang.org/protobuf/internal/encoding/text
+google.golang.org/protobuf/internal/errors
+google.golang.org/protobuf/internal/filedesc
+google.golang.org/protobuf/internal/filetype
+google.golang.org/protobuf/internal/flags
+google.golang.org/protobuf/internal/genid
+google.golang.org/protobuf/internal/impl
+google.golang.org/protobuf/internal/order
+google.golang.org/protobuf/internal/pragma
+google.golang.org/protobuf/internal/protolazy
+google.golang.org/protobuf/internal/set
+google.golang.org/protobuf/internal/strs
+google.golang.org/protobuf/internal/version
+google.golang.org/protobuf/proto
+google.golang.org/protobuf/reflect/protodesc
+google.golang.org/protobuf/reflect/protoreflect
+google.golang.org/protobuf/reflect/protoregistry
+google.golang.org/protobuf/runtime/protoiface
+google.golang.org/protobuf/runtime/protoimpl
+google.golang.org/protobuf/types/descriptorpb
+google.golang.org/protobuf/types/gofeaturespb
+google.golang.org/protobuf/types/known/anypb
+google.golang.org/protobuf/types/known/timestamppb
+# gopkg.in/yaml.v3 v3.0.1
+## explicit
+gopkg.in/yaml.v3
+# tailscale.com v1.58.2
+## explicit; go 1.21
+tailscale.com/wgengine/winnet
+# gitlab.com/yawning/obfs4.git => github.com/jmwample/obfs4 v0.0.0-20230725223418-2d2e5b4a16ba
+# github.com/pion/dtls/v2 => ./replace/dtls

@@ -1,0 +1,200 @@
+/*
+ * Copyright (c) 2020, Psiphon Inc.
+ * All rights reserved.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+package common
+
+import (
+	"testing"
+	"testing/iotest"
+	"time"
+
+	"github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/monotime"
+)
+
+func TestActivityMonitoredConn(t *testing.T) {
+	buffer := make([]byte, 1024)
+
+	realStartTimeBefore := time.Now().UTC()
+	monotonicStartTimeBefore := monotime.Now()
+
+	conn, err := NewActivityMonitoredConn(
+		&dummyConn{},
+		200*time.Millisecond,
+		true,
+		nil)
+	if err != nil {
+		t.Fatalf("NewActivityMonitoredConn failed")
+	}
+
+	realStartTimeAfter := time.Now().UTC()
+	monotonicStartTimeAfter := monotime.Now()
+
+	time.Sleep(100 * time.Millisecond)
+
+	_, err = conn.Read(buffer)
+	if err != nil {
+		t.Fatalf("read before initial timeout failed")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	_, err = conn.Read(buffer)
+	if err != nil {
+		t.Fatalf("previous read failed to extend timeout")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	_, err = conn.Write(buffer)
+	if err != nil {
+		t.Fatalf("previous read failed to extend timeout")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	lastSuccessfulReadTimeBefore := monotime.Now()
+	_, err = conn.Read(buffer)
+	lastSuccessfulReadTimeAfter := monotime.Now()
+	if err != nil {
+		t.Fatalf("previous write failed to extend timeout")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	_, err = conn.Write(buffer)
+	if err != nil {
+		t.Fatalf("previous read failed to extend timeout")
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	_, err = conn.Read(buffer)
+	if err != iotest.ErrTimeout {
+		t.Fatalf("failed to timeout")
+	}
+
+	// Check time ranges since time.Now() in NewActivityMonitoredConn may not
+	// match outer time check, even if rounded to milliseconds.
+
+	startTime := conn.GetStartTime()
+	if startTime.Before(realStartTimeBefore) || startTime.After(realStartTimeAfter) {
+		t.Fatalf("unexpected GetStartTime")
+	}
+
+	activeDuration := conn.GetActiveDuration()
+	if activeDuration < lastSuccessfulReadTimeBefore.Sub(monotonicStartTimeAfter) ||
+		activeDuration > lastSuccessfulReadTimeAfter.Sub(monotonicStartTimeBefore) {
+		t.Fatalf("unexpected GetActiveDuration")
+	}
+
+	// Test: SetInactivityTimeout
+
+	conn, err = NewActivityMonitoredConn(
+		&dummyConn{},
+		200*time.Millisecond,
+		false,
+		nil)
+	if err != nil {
+		t.Fatalf("NewActivityMonitoredConn failed")
+	}
+
+	err = conn.SetInactivityTimeout(-1)
+	if err == nil {
+		t.Fatalf("unexpected SetInactivityTimeout success")
+	}
+
+	err = conn.SetInactivityTimeout(0)
+	if err != nil {
+		t.Fatalf("SetInactivityTimeout failed")
+	}
+
+	time.Sleep(400 * time.Millisecond)
+
+	_, err = conn.Read(buffer)
+	if err != nil {
+		t.Fatalf("read after deactivated timeout failed")
+	}
+
+	err = conn.SetInactivityTimeout(200 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("SetInactivityTimeout failed")
+	}
+
+	time.Sleep(400 * time.Millisecond)
+
+	_, err = conn.Read(buffer)
+	if err != iotest.ErrTimeout {
+		t.Fatalf("failed to timeout")
+	}
+}
+
+func TestActivityMonitoredLRUConns(t *testing.T) {
+
+	lruConns := NewLRUConns()
+
+	dummy1 := &dummyConn{}
+	conn1, err := NewActivityMonitoredConn(dummy1, 0, true, lruConns.Add(dummy1))
+	if err != nil {
+		t.Fatalf("NewActivityMonitoredConn failed")
+	}
+
+	dummy2 := &dummyConn{}
+	conn2, err := NewActivityMonitoredConn(dummy2, 0, true, lruConns.Add(dummy2))
+	if err != nil {
+		t.Fatalf("NewActivityMonitoredConn failed")
+	}
+
+	dummy3 := &dummyConn{}
+	conn3, err := NewActivityMonitoredConn(dummy3, 0, true, lruConns.Add(dummy3))
+	if err != nil {
+		t.Fatalf("NewActivityMonitoredConn failed")
+	}
+
+	buffer := make([]byte, 1024)
+
+	conn1.Read(buffer)
+	conn2.Read(buffer)
+	conn3.Read(buffer)
+
+	conn3.Write(buffer)
+	conn2.Write(buffer)
+	conn1.Write(buffer)
+
+	if dummy1.IsClosed() || dummy2.IsClosed() || dummy3.IsClosed() {
+		t.Fatalf("unexpected IsClosed state")
+	}
+
+	lruConns.CloseOldest()
+
+	if dummy1.IsClosed() || dummy2.IsClosed() || !dummy3.IsClosed() {
+		t.Fatalf("unexpected IsClosed state")
+	}
+
+	lruConns.CloseOldest()
+
+	if dummy1.IsClosed() || !dummy2.IsClosed() || !dummy3.IsClosed() {
+		t.Fatalf("unexpected IsClosed state")
+	}
+
+	lruConns.CloseOldest()
+
+	if !dummy1.IsClosed() || !dummy2.IsClosed() || !dummy3.IsClosed() {
+		t.Fatalf("unexpected IsClosed state")
+	}
+}

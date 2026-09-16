@@ -1,0 +1,21 @@
+PODS:
+  - PsiphonTunnel (2.0.2)
+
+DEPENDENCIES:
+  - PsiphonTunnel (from `https://github.com/Psiphon-Labs/psiphon-tunnel-core-iOS-library.git`)
+
+EXTERNAL SOURCES:
+  PsiphonTunnel:
+    :git: https://github.com/Psiphon-Labs/psiphon-tunnel-core-iOS-library.git
+
+CHECKOUT OPTIONS:
+  PsiphonTunnel:
+    :commit: c9af3bab93637163e117de9d1e77435baa7646c0
+    :git: https://github.com/Psiphon-Labs/psiphon-tunnel-core-iOS-library.git
+
+SPEC CHECKSUMS:
+  PsiphonTunnel: 0c3f8677e4b26316beba57df78ed9c75634ce091
+
+PODFILE CHECKSUM: 8711bb78c7abfbcb0572f1456772d4c1265e9b2a
+
+COCOAPODS: 1.15.2

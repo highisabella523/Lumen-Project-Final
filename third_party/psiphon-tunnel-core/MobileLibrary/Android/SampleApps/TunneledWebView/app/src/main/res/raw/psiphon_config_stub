@@ -1,0 +1,24 @@
+/*
+These are the minimum values required to use the Psiphon Tunnel.
+ClientVersion is the version number of your software, which will be tracked in Psiphon stats.
+All other values will be provided to you by Psiphon Inc.
+*/
+
+{
+    "ClientVersion": "123", /* Must be a number in a string. */
+    "PropagationChannelId" : "...",
+    "SponsorId" : "...",
+    "RemoteServerListURLs": "[...]",
+    "RemoteServerListSignaturePublicKey" : "...",
+    "DataStoreDirectory" : "",
+    "DataStoreTempDirectory" : "",
+    "LogFilename" : "",
+    "LocalHttpProxyPort" : 0,
+    "LocalSocksProxyPort" : 0,
+    "EgressRegion" : "",
+    "TunnelProtocol" : "",
+    "ConnectionWorkerPoolSize" : 10,
+    "TunnelPoolSize" : 1,
+    "PortForwardFailureThreshold" : 10,
+    "UpstreamProxyUrl" : ""
+}

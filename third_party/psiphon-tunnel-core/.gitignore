@@ -1,0 +1,60 @@
+# Exclude test config files from source control
+psiphon_config
+psiphon.config
+controller_test.config
+psiphon.db*
+psiphon.boltdb
+remote_server_list
+psiphon-embedded-server-entries.txt
+
+# Exclude compiled tunnel core binaries
+ConsoleClient/ConsoleClient
+ConsoleClient/bin
+AndroidLibrary/psi.aar
+
+# Compiled Object files, Static and Dynamic libs (Shared Objects)
+*.o
+*.a
+*.so
+*.dylib
+
+# Folders
+_obj
+_test
+
+# Architecture specific extensions/prefixes
+*.[568vq]
+[568vq].out
+
+*.cgo1.go
+*.cgo2.c
+_cgo_defun.c
+_cgo_gotypes.go
+_cgo_export.*
+
+_testmain.go
+
+*.exe
+*.test
+*.prof
+*_buildinfo.txt
+
+# Mac OS X clutter
+*.DS_Store
+
+# Windows clutter
+Thumbs.db
+
+# Intellij IDEA (see https://intellij-support.jetbrains.com/entries/23393067)
+.idea/workspace.xml
+.idea/tasks.xml
+
+# Ignore gradle files
+.gradle/
+build/
+
+# Visual Studio Code
+.vscode/
+
+# Intellij IDEs
+.idea/

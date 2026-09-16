@@ -1,0 +1,33 @@
+# Local state, credentials, and generated artifacts must never enter an image.
+.git
+.gitignore
+.agent-service
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+analysis/
+raw/
+*.zip
+.env
+.env.*
+code_state.json
+code_state.backup-*.json
+code_state.tmp
+code_secret.key
+telegram_store.json
+psiphon/session-state.json
+psiphon/core-data/
+*.pem
+*.key
+
+# Tests and the separate Railway installer service are not application runtime
+# dependencies. They remain in the source archive and CI checkout.
+tests/
+railway-installer/

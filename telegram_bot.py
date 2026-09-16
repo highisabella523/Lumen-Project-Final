@@ -326,7 +326,8 @@ def _main_kb(user_id: int):
          {"text": "🛒 خرید سرویس", "callback_data": "plans"}],
         [{"text": "🔄 تمدید سرویس", "callback_data": "renew"},
          {"text": "💰 کیف پول", "callback_data": "wallet"}],
-        [{"text": "📖 راهنمای اتصال", "callback_data": "guide"}],
+        [{"text": "👤 حساب من", "callback_data": "account"},
+         {"text": "📖 راهنمای اتصال", "callback_data": "guide"}],
     ]
     if _is_admin(user_id):
         rows.append([{"text": "🛠 پنل مدیریت فروش", "callback_data": "admin"}])
@@ -345,6 +346,28 @@ def _main_text(user: dict):
         "همه سرویس‌ها به‌صورت خودکار با پروتکل پرسرعت <b>VLESS + WS</b> ساخته می‌شوند؛ "
         "بعد از خرید فقط لینک را وارد برنامه کن و هیچ تنظیم دستی لازم نیست."
     )
+
+
+
+def _account_text(user: dict, user_id: int):
+    services = _user_services(user_id)
+    active = sum(1 for _, link in services if is_link_allowed(link))
+    return (
+        "👤 <b>حساب من</b>\n\n"
+        f"نام: {_e(user.get('first_name') or 'کاربر')}\n"
+        f"شناسه تلگرام: <code>{int(user_id)}</code>\n"
+        f"موجودی: <b>{_money(user.get('balance', 0))}</b>\n"
+        f"سرویس‌های فعال: <b>{active}</b> از {len(services)}\n\n"
+        "برای دریافت کانفیگ یا مدیریت سرویس‌ها، «سرویس‌های من» را باز کن."
+    )
+
+
+def _account_kb():
+    return {"inline_keyboard": [
+        [{"text": "📦 سرویس‌های من", "callback_data": "services"}],
+        [{"text": "💰 کیف پول", "callback_data": "wallet"}],
+        [{"text": "⬅ منوی اصلی", "callback_data": "menu"}],
+    ]}
 
 
 def _plans_kb(prefix="buy", service_id: str | None = None):
@@ -608,7 +631,10 @@ async def _apply_discount(order_id: str, user_id: int, code_text: str):
             discount = base * min(100, max(1, int(entry.get("value", 0)))) // 100
         else:
             discount = min(base, max(0, int(entry.get("value", 0))))
-        discount = min(discount, max(0, base - 1_000))
+        # Never allow a discount to make the payable amount negative. Zero-value
+        # orders are valid only when the configured business flow explicitly
+        # handles them; this store keeps the total bounded and deterministic.
+        discount = min(discount, max(0, base))
         order["discount_code"] = code
         order["discount_amount"] = discount
         order["amount"] = base - discount
@@ -1175,6 +1201,9 @@ async def _handle_callback(cb: dict):
     if data == "plans":
         await _edit(chat_id, message_id, _plans_text(), _plans_kb())
         return
+    if data == "account":
+        await _edit(chat_id, message_id, _account_text(user, chat_id), _account_kb())
+        return
     if data.startswith("buy:"):
         plan = _active_plan(data.split(":", 1)[1])
         if not plan:
@@ -1374,7 +1403,7 @@ async def _handle_callback(cb: dict):
         return
     if data == "apromo":
         _pending[chat_id] = {"action": "promo_admin_code", "data": {}}
-        await _edit(chat_id, message_id, "🏷 کد تخفیف جدید را بفرست؛ مثال: <code>OFF20</code>\nبرای لغو /cancel را ارسال کن.")
+        await _edit(chat_id, message_id, "🏷 کد تخفیف جدید را بفرست؛ مثال: <code>OFF20</code>\nبرای ��غو /cancel را ارسال کن.")
         return
     if data.startswith("ptype:"):
         pending = _pending.get(chat_id) or {}

@@ -8,4 +8,4 @@ The previous v28 panel used a compact right command rail, a four-card dashboard 
 - Understand: Live sessions, Traffic story, Timeline, Issues
 - Manage: Trust center, Connection lab, Settings
 
-All API routes and live-data element contracts are preserved. Psiphon raw states remain visible while operational issues are elevated and explicitly state that the primary VLESS/WebSocket route is unaffected.
+All API routes and live-data element contracts are preserved. Managed proxy health remains visible while operational issues are elevated without changing the primary VLESS/WebSocket route.

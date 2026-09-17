@@ -1748,6 +1748,51 @@ async def create_sub_group(name: str = "گروه جدید", desc: str = "", pass
     log_activity("sub", f"گروه «{name}» ساخته شد", "ok")
     return sub_id, SUBS[sub_id]
 
+async def set_link_sub(uid: str, sub_id: str | None) -> bool:
+    """Move a link between subscription groups, or remove its group."""
+    async with LINKS_LOCK:
+        if uid not in LINKS:
+            return False
+        old_sub = LINKS[uid].get("sub_id")
+        label = LINKS[uid].get("label", uid)
+
+    target_sub = None
+    if sub_id is not None:
+        async with SUBS_LOCK:
+            if sub_id not in SUBS:
+                return False
+            target_sub = SUBS[sub_id]
+
+    if target_sub is not None:
+        async with LINKS_LOCK:
+            link = LINKS.get(uid)
+        try:
+            validate_raw_tcp_multi_location(link, target_sub.get("multi_location"))
+        except ValueError:
+            return False
+
+    async with SUBS_LOCK:
+        if old_sub and old_sub in SUBS:
+            ids = SUBS[old_sub].get("link_ids", [])
+            if uid in ids:
+                ids.remove(uid)
+        if sub_id and sub_id in SUBS:
+            ids = SUBS[sub_id].setdefault("link_ids", [])
+            if uid not in ids:
+                ids.append(uid)
+
+    async with LINKS_LOCK:
+        if uid in LINKS:
+            LINKS[uid]["sub_id"] = sub_id
+
+    await save_state(strict=True)
+    log_activity(
+        "link",
+        f"کانفیگ «{label}» {'به گروه اضافه شد' if sub_id else 'از گروه خارج شد'}",
+        "info",
+    )
+    return True
+
 async def validate_multi_location(payload: object, previous: dict | None = None, *, require_tests: bool = False) -> dict:
     """Validate exactly two country routes without allowing country fallback."""
     if not isinstance(payload, dict):

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
+import proxy_repository
 
 from main import (
     LINKS,
@@ -46,48 +47,14 @@ MAX_TOPUP = 20_000_000
 RECEIPT_TIMEOUT_HOURS = max(1, int(os.environ.get("STORE_RECEIPT_TIMEOUT_HOURS", "24") or 24))
 PAGE_SIZE = 6
 
-# قیمت‌ها به تومان هستند. مدیر می‌تواند کل کاتالوگ را با STORE_PLANS_JSON جایگزین کند.
+# Canonical customer catalogue. It is intentionally not environment-overridable:
+# all Telegram checkout, renewals, admin views, tests, and provisioning use this one list.
 DEFAULT_PLANS = [
-    {"id": "eco30", "name": "اقتصادی", "gb": 30, "days": 30, "price": 79_000, "active": True},
-    {"id": "std30", "name": "استاندارد", "gb": 60, "days": 30, "price": 129_000, "active": True},
-    {"id": "pro30", "name": "حرفه‌ای", "gb": 100, "days": 30, "price": 179_000, "active": True},
-    {"id": "std60", "name": "دوماهه", "gb": 150, "days": 60, "price": 289_000, "active": True},
-    {"id": "pro90", "name": "سه‌ماهه", "gb": 250, "days": 90, "price": 429_000, "active": True},
-    {"id": "max90", "name": "پرحجم", "gb": 500, "days": 90, "price": 749_000, "active": True},
+    {"id": "economic", "name": "اقتصادی", "quota_bytes": 10 * 1024 ** 3, "quota_label": "10 GB", "days": 25, "price": 80_000, "trial": False, "active": True},
+    {"id": "standard", "name": "استاندارد", "quota_bytes": 20 * 1024 ** 3, "quota_label": "20 GB", "days": 30, "price": 100_000, "trial": False, "active": True},
+    {"id": "trial", "name": "تستی", "quota_bytes": 150 * 1024 ** 2, "quota_label": "150 MB", "days": 1, "price": 0, "trial": True, "active": True},
 ]
-
-
-def _load_env_plans():
-    raw = os.environ.get("STORE_PLANS_JSON", "").strip()
-    if not raw:
-        return copy.deepcopy(DEFAULT_PLANS)
-    try:
-        value = json.loads(raw)
-        out = []
-        seen = set()
-        for p in value:
-            pid = re.sub(r"[^a-zA-Z0-9_-]", "", str(p.get("id", "")))[:16]
-            gb, days, price = int(p["gb"]), int(p["days"]), int(p["price"])
-            if not pid or pid in seen or gb <= 0 or days <= 0 or price <= 0:
-                raise ValueError("invalid plan")
-            seen.add(pid)
-            out.append({
-                "id": pid,
-                "name": str(p.get("name") or pid)[:40],
-                "gb": gb,
-                "days": days,
-                "price": price,
-                "active": bool(p.get("active", True)),
-            })
-        if not out:
-            raise ValueError("empty plan list")
-        return out
-    except Exception as exc:
-        logger.warning("STORE_PLANS_JSON نامعتبر است؛ قیمت‌های پیش‌فرض استفاده می‌شوند: %s", exc)
-        return copy.deepcopy(DEFAULT_PLANS)
-
-
-PLANS = _load_env_plans()
+PLANS = copy.deepcopy(DEFAULT_PLANS)
 PLAN_BY_ID = {p["id"]: p for p in PLANS}
 
 
@@ -100,6 +67,7 @@ def _default_store():
         "gift_codes": {},
         "discount_codes": {},
         "redemption_audit": [],
+        "admin_audit": [],
         "settings": {
             "store_name": STORE_NAME,
             "card_number": os.environ.get("STORE_CARD_NUMBER", "").strip(),
@@ -210,6 +178,8 @@ async def _load_store():
                     base[key] = loaded[key]
             if isinstance(loaded.get("redemption_audit"), list):
                 base["redemption_audit"] = loaded["redemption_audit"][-5000:]
+            if isinstance(loaded.get("admin_audit"), list):
+                base["admin_audit"] = loaded["admin_audit"][-1000:]
             if isinstance(loaded.get("poll_offset"), int) and loaded["poll_offset"] >= 0:
                 base["poll_offset"] = loaded["poll_offset"]
             if isinstance(loaded.get("settings"), dict):
@@ -247,6 +217,7 @@ async def _ensure_user(from_user: dict):
                 "last_seen_at": _iso(),
                 "sub_id": None,
                 "gift_codes": [],
+                "trial_used_at": None,
             }
             STORE["users"][key] = user
             changed = True
@@ -355,22 +326,24 @@ def _main_text(user: dict):
     )
 
 
-def _plans_kb(prefix="buy", service_id: str | None = None):
+def _plans_kb(prefix="buy", service_id: str | None = None, user: dict | None = None):
     rows = []
     for p in PLANS:
-        if not p.get("active", True):
+        if not p.get("active", True) or (p.get("trial") and (prefix != "buy" or (user or {}).get("trial_used_at"))):
             continue
         data = f"{prefix}:{p['id']}" if not service_id else f"{prefix}:{service_id}:{p['id']}"
-        rows.append([{"text": f"{p['gb']}GB · {p['days']} روز — {_money(p['price'])}", "callback_data": data}])
+        price_label = "رایگان" if int(p["price"]) == 0 else _money(p["price"])
+        rows.append([{"text": f"{p['name']} · {p['quota_label']} · {p['days']} روز — {price_label}", "callback_data": data}])
     rows.append([{"text": "⬅ بازگشت", "callback_data": "menu" if prefix == "buy" else "renew"}])
     return {"inline_keyboard": rows}
 
 
-def _plans_text(title="خرید سرویس جدید"):
+def _plans_text(title="خرید سرویس جدید", user: dict | None = None, include_trial: bool = True):
     lines = [f"🛒 <b>{title}</b>", "", "همه پلن‌ها WS، بدون محدودیت سرعت و آماده استفاده هستند:"]
     for p in PLANS:
-        if p.get("active", True):
-            lines.append(f"• {_e(p['name'])}: <b>{p['gb']}GB</b> / {p['days']} روز — <b>{_money(p['price'])}</b>")
+        if p.get("active", True) and (include_trial or not p.get("trial")) and not (p.get("trial") and (user or {}).get("trial_used_at")):
+            price_label = "رایگان" if int(p["price"]) == 0 else _money(p["price"])
+            lines.append(f"• <b>{_e(p['name'])}</b>: <b>{p['quota_label']}</b> / {p['days']} روز — <b>{price_label}</b>")
     return "\n".join(lines)
 
 
@@ -381,7 +354,7 @@ def _order_text(order: dict):
     if p:
         out.extend([
             f"پلن: {_e(p.get('name'))}",
-            f"حجم: {p.get('gb')}GB",
+            f"حجم: {p.get('quota_label', '—')}",
             f"اعتبار: {p.get('days')} روز",
         ])
     out.append(f"مبلغ اولیه: {_money(order.get('base_amount', order.get('amount', 0)))}")
@@ -393,6 +366,11 @@ def _order_text(order: dict):
 
 def _order_pay_kb(order: dict, balance: int):
     oid = order["id"]
+    if int(order.get("amount", 0)) == 0:
+        return {"inline_keyboard": [
+            [{"text": "✅ فعال‌سازی رایگان", "callback_data": f"free:{oid}"}],
+            [{"text": "❌ لغو سفارش", "callback_data": f"cancel:{oid}"}],
+        ]}
     return {"inline_keyboard": [
         [{"text": f"💰 پرداخت از کیف پول ({_money(balance)})", "callback_data": f"payw:{oid}"}],
         [{"text": "💳 کارت‌به‌کارت و ارسال رسید", "callback_data": f"payc:{oid}"}],
@@ -451,6 +429,7 @@ def _admin_kb():
         [{"text": "🧾 پرداخت‌های در انتظار", "callback_data": "ap:0"}],
         [{"text": "🎁 ساخت کد هدیه", "callback_data": "agift"},
          {"text": "🏷 ساخت کد تخفیف", "callback_data": "apromo"}],
+        [{"text": "🌍 تخصیص پراکسی", "callback_data": "assign"}],
         [{"text": "💳 تنظیم کارت بانکی", "callback_data": "acard"}],
         [{"text": "📋 مشاهده پلن‌ها", "callback_data": "aplans"},
          {"text": "📊 آمار فروشگاه", "callback_data": "astats"}],
@@ -556,7 +535,7 @@ def _user_services(user_id: int):
 async def _create_order(user_id: int, kind: str, plan: dict | None = None, service_id: str | None = None, amount: int | None = None):
     async with _state_lock:
         oid = _new_order_id()
-        base_amount = int(amount if amount is not None else plan["price"])
+        base_amount = max(0, int(amount if amount is not None else plan["price"]))
         order = {
             "id": oid,
             "user_id": int(user_id),
@@ -598,6 +577,19 @@ def _discount_valid(code_entry: dict, user_id: int):
         return False, "این کد قبلاً توسط شما استفاده شده است."
     return True, ""
 
+def _calculate_payable(base_amount: object, code_entry: dict | None) -> tuple[int, int]:
+    """The only commerce price calculation: non-negative base, discount, and payable."""
+    base = max(0, int(base_amount or 0))
+    if not code_entry:
+        return base, 0
+    value = max(0, int(code_entry.get("value", 0) or 0))
+    if code_entry.get("type") == "percent":
+        discount = (base * min(100, value)) // 100
+    else:
+        discount = min(base, value)
+    discount = min(base, max(0, discount))
+    return base - discount, discount
+
 
 async def _apply_discount(order_id: str, user_id: int, code_text: str):
     code = _normalize_code(code_text)
@@ -611,15 +603,10 @@ async def _apply_discount(order_id: str, user_id: int, code_text: str):
         ok, error = _discount_valid(entry, user_id)
         if not ok:
             return None, error
-        base = int(order.get("base_amount", 0))
-        if entry.get("type") == "percent":
-            discount = base * min(100, max(1, int(entry.get("value", 0)))) // 100
-        else:
-            discount = min(base, max(0, int(entry.get("value", 0))))
-        discount = min(discount, max(0, base - 1_000))
+        amount, discount = _calculate_payable(order.get("base_amount", 0), entry)
         order["discount_code"] = code
         order["discount_amount"] = discount
-        order["amount"] = base - discount
+        order["amount"] = amount
     await _save_store()
     return STORE["orders"][order_id], None
 
@@ -706,6 +693,8 @@ async def _start_card_payment(order_id: str, user_id: int):
         order = STORE["orders"].get(order_id)
         if not order or order.get("user_id") != user_id or order.get("status") != "draft":
             return None, "سفارش معتبر نیست یا قبلاً پرداخت شده است."
+        if int(order.get("amount", 0)) <= 0:
+            return None, "این سفارش نیاز به پرداخت ندارد؛ فعال‌سازی رایگان را انتخاب کن."
         ok, error = _reserve_discount_locked(order)
         if not ok:
             return None, error
@@ -759,8 +748,8 @@ async def _provision_new(order: dict):
     label_name = user.get("first_name") or str(user_id)
     sub_id = await _ensure_customer_sub(user_id)
     uid, _ = await make_link(
-        label=f"{label_name} · {plan['gb']}GB/{plan['days']}روز",
-        limit_bytes=int(plan["gb"]) * 1024 ** 3,
+        label=f"{label_name} · {plan['quota_label']}/{plan['days']}روز",
+        limit_bytes=int(plan["quota_bytes"]),
         expires_at=expires_at,
         note=f"فروش خودکار تلگرام · سفارش {order['id']}",
         sub_id=sub_id,
@@ -801,7 +790,7 @@ async def _provision_renew(order: dict):
             old_exp = _now()
         base = max(_now(), old_exp)
         link.update({
-            "limit_bytes": remaining + int(plan["gb"]) * 1024 ** 3,
+            "limit_bytes": remaining + int(plan["quota_bytes"]),
             "used_bytes": 0,
             "expires_at": (base + timedelta(days=int(plan["days"]))).isoformat(),
             "active": True,
@@ -831,15 +820,25 @@ async def _finish_order(order_id: str, reviewer_id: int | None, source: str):
             user = STORE["users"].get(str(order["user_id"]))
             if not user:
                 return None, "کاربر پیدا نشد."
-            if source == "wallet":
+            is_trial = bool((order.get("plan") or {}).get("trial"))
+            if is_trial and user.get("trial_used_at"):
+                return None, "پلن تستی قبلاً برای این حساب استفاده شده است."
+            if source == "free" and int(order.get("amount", 0)) != 0:
+                return None, "فعال‌سازی رایگان برای این سفارش معتبر نیست."
+            if source == "card" and int(order.get("amount", 0)) <= 0:
+                return None, "تایید پرداخت برای سفارش رایگان معتبر نیست."
+            if source in {"wallet", "free"}:
                 ok, error = _reserve_discount_locked(order)
                 if not ok:
                     return None, error
-                if int(user.get("balance", 0)) < int(order.get("amount", 0)):
-                    _release_discount_locked(order)
-                    return None, "موجودی کیف پول کافی نیست."
-                user["balance"] = int(user.get("balance", 0)) - int(order["amount"])
-                order["payment_method"] = "wallet"
+                if source == "wallet":
+                    if int(user.get("balance", 0)) < int(order.get("amount", 0)):
+                        _release_discount_locked(order)
+                        return None, "موجودی کیف پول کافی نیست."
+                    user["balance"] = int(user.get("balance", 0)) - int(order["amount"])
+                    order["payment_method"] = "wallet"
+                else:
+                    order["payment_method"] = "free"
             order["status"] = "processing"
             order["reviewer_id"] = reviewer_id
             order["processing_at"] = _iso()
@@ -865,6 +864,9 @@ async def _finish_order(order_id: str, reviewer_id: int | None, source: str):
                     user["balance"] = int(user.get("balance", 0)) + int(current["amount"])
                     _release_discount_locked(current)
                     current["status"] = "draft"
+                elif source == "free":
+                    _release_discount_locked(current)
+                    current["status"] = "draft"
                 else:
                     current["status"] = "pending_admin"
                 current["last_error"] = str(exc)[:300]
@@ -876,6 +878,8 @@ async def _finish_order(order_id: str, reviewer_id: int | None, source: str):
             current = STORE["orders"][order_id]
             current["status"] = "approved"
             current["approved_at"] = _iso()
+            if (current.get("plan") or {}).get("trial"):
+                STORE["users"][str(current["user_id"])]["trial_used_at"] = current["approved_at"]
             current["service_id"] = service_id or current.get("service_id")
         await _save_store()
         return STORE["orders"][order_id], None
@@ -1134,6 +1138,54 @@ async def _handle_message(msg: dict):
     await _show_menu(chat_id, user)
 
 
+
+def _assignment_targets() -> list[dict]:
+    by_code = {}
+    for record in proxy_repository.records_for_country():
+        current = by_code.get(record.code)
+        if current is None or (record.health, record.id) > (current.health, current.id):
+            by_code[record.code] = record
+    return [{"code": r.code, "country": r.country, "flag": r.flag} for r in sorted(by_code.values(), key=lambda r: (r.country, r.code))[:30]]
+
+
+def _eligible_assignment_links() -> list[tuple[str, dict]]:
+    return [(uid, link) for uid, link in LINKS.items() if link.get("store_managed") and str(link.get("owner_telegram_id", "")) in STORE["users"]]
+
+
+async def _apply_proxy_assignment(admin_id: int, country_code: str) -> tuple[dict | None, str | None]:
+    if not _is_admin(admin_id):
+        return None, "دسترسی ادمین لازم است"
+    target = next((x for x in _assignment_targets() if x["code"] == country_code), None)
+    if not target:
+        return None, "موقعیت انتخاب‌شده دیگر در دسترس نیست."
+    records = proxy_repository.records_for_country(country_code)
+    if not records:
+        return None, "موقعیت انتخاب‌شده دیگر در دسترس نیست."
+    record = max(records, key=lambda r: (r.health, r.id))
+    changed, skipped = [], 0
+    async with LINKS_LOCK:
+        eligible = _eligible_assignment_links()
+        for uid, link in eligible:
+            if link.get("exit_proxy_mode") == "repository" and link.get("proxy_id") == record.id:
+                skipped += 1
+                continue
+            changed.append((uid, link.get("exit_proxy_mode"), link.get("proxy_id"), link.get("custom_proxy")))
+            link.update({"exit_proxy_mode": "repository", "proxy_id": record.id, "custom_proxy": ""})
+    try:
+        await save_state()
+    except Exception:
+        async with LINKS_LOCK:
+            for uid, mode, proxy_id, custom_proxy in changed:
+                if uid in LINKS:
+                    LINKS[uid].update({"exit_proxy_mode": mode, "proxy_id": proxy_id, "custom_proxy": custom_proxy})
+        return None, "ذخیره‌سازی انجام نشد؛ تغییری اعمال نشد."
+    result = {"target": target, "eligible": len(eligible), "updated": len(changed), "skipped": skipped, "failed": 0}
+    async with _state_lock:
+        STORE.setdefault("admin_audit", []).append({"kind": "proxy_assignment", "admin_id": int(admin_id), "country_code": country_code, **{k: result[k] for k in ("eligible", "updated", "skipped", "failed")}, "at": _iso()})
+        STORE["admin_audit"] = STORE["admin_audit"][-1000:]
+    await _save_store()
+    return result, None
+
 # ── Callback flow ────────────────────────────────────────────────────────────
 async def _handle_callback(cb: dict):
     message = cb.get("message") or {}
@@ -1160,10 +1212,13 @@ async def _handle_callback(cb: dict):
         await _show_menu(chat_id, user, message_id)
         return
     if data == "plans":
-        await _edit(chat_id, message_id, _plans_text(), _plans_kb())
+        await _edit(chat_id, message_id, _plans_text(user=user), _plans_kb(user=user))
         return
     if data.startswith("buy:"):
         plan = _active_plan(data.split(":", 1)[1])
+        if plan and plan.get("trial") and user.get("trial_used_at"):
+            await _edit(chat_id, message_id, "پلن تستی قبلاً برای این حساب استفاده شده است.", _main_kb(chat_id))
+            return
         if not plan:
             await _edit(chat_id, message_id, "این پلن فعال نیست.", _main_kb(chat_id))
             return
@@ -1190,6 +1245,18 @@ async def _handle_callback(cb: dict):
             await _edit(chat_id, message_id, f"❗️ {error}", _main_kb(chat_id))
             return
         await _edit(chat_id, message_id, "✅ پرداخت از کیف پول انجام شد و سرویس آماده است.", _main_kb(chat_id))
+        return
+    if data.startswith("free:"):
+        oid = data.split(":", 1)[1]
+        order = STORE["orders"].get(oid)
+        if not order or order.get("user_id") != chat_id:
+            await _answer(callback_id, "سفارش متعلق به شما نیست", True)
+            return
+        done, error = await _finish_order(oid, None, "free")
+        if error:
+            await _edit(chat_id, message_id, f"❗️ {error}", _main_kb(chat_id))
+            return
+        await _edit(chat_id, message_id, "✅ سرویس رایگان با موفقیت فعال شد.", _main_kb(chat_id))
         return
     if data.startswith("payc:"):
         oid = data.split(":", 1)[1]
@@ -1264,7 +1331,7 @@ async def _handle_callback(cb: dict):
         if not link or str(link.get("owner_telegram_id", "")) != str(chat_id):
             await _answer(callback_id, "سرویس پیدا نشد", True)
             return
-        await _edit(chat_id, message_id, _plans_text(f"تمدید {_e(link.get('label'))}"), _plans_kb("rplan", uid))
+        await _edit(chat_id, message_id, _plans_text(f"تمدید {_e(link.get('label'))}", include_trial=False), _plans_kb("rplan", uid))
         return
     if data.startswith("rplan:"):
         try:
@@ -1273,7 +1340,7 @@ async def _handle_callback(cb: dict):
             await _answer(callback_id, "انتخاب نامعتبر است", True)
             return
         link, plan = LINKS.get(uid), _active_plan(plan_id)
-        if not link or str(link.get("owner_telegram_id", "")) != str(chat_id) or not plan:
+        if not link or str(link.get("owner_telegram_id", "")) != str(chat_id) or not plan or plan.get("trial"):
             await _answer(callback_id, "انتخاب نامعتبر است", True)
             return
         order = await _create_order(chat_id, "renew", plan, service_id=uid)
@@ -1307,12 +1374,50 @@ async def _handle_callback(cb: dict):
         return
 
     # Admin callbacks
-    if data.startswith(("admin", "ap:", "aord:", "areceipt:", "aok:", "ano:", "agift", "apromo", "ptype:", "acard", "aplans", "astats")):
+    if data.startswith(("admin", "ap:", "aord:", "areceipt:", "aok:", "ano:", "agift", "apromo", "ptype:", "acard", "aplans", "astats", "assign", "asgn:", "asgnok:", "asgncancel")):
         if not _is_admin(chat_id):
             await _answer(callback_id, "دسترسی ادمین لازم است", True)
             return
     if data == "admin":
         await _edit(chat_id, message_id, "🛠 <b>پنل مدیریت فروش</b>", _admin_kb())
+        return
+    if data == "assign":
+        targets = _assignment_targets()
+        if not targets:
+            await _edit(chat_id, message_id, "موقعیت قابل تخصیصی در حال حاضر وجود ندارد.", _admin_kb())
+            return
+        rows = [[{"text": f"{x['flag']} {x['country']}", "callback_data": f"asgn:{x['code']}"}] for x in targets]
+        rows.append([{"text": "⬅ پنل مدیریت", "callback_data": "admin"}])
+        await _edit(chat_id, message_id, "🌍 <b>تخصیص پراکسی</b>\n\nیک موقعیت پشتیبانی‌شده را انتخاب کن:", {"inline_keyboard": rows})
+        return
+    if data.startswith("asgn:"):
+        code = data.split(":", 1)[1].upper()
+        target = next((x for x in _assignment_targets() if x["code"] == code), None)
+        if not target:
+            await _answer(callback_id, "موقعیت نامعتبر است", True)
+            return
+        eligible = _eligible_assignment_links()
+        _pending[chat_id] = {"action": "proxy_assignment", "code": code}
+        kb = {"inline_keyboard": [[{"text": "✅ تایید تخصیص", "callback_data": f"asgnok:{code}"}, {"text": "❌ لغو", "callback_data": "asgncancel"}], [{"text": "⬅ انتخاب موقعیت", "callback_data": "assign"}]]}
+        await _edit(chat_id, message_id, f"🌍 <b>تایید تخصیص</b>\n\nمقصد: {target['flag']} {_e(target['country'])}\nکاربران دارای سرویس: <b>{len({str(link.get('owner_telegram_id')) for _, link in eligible}):,}</b>\nسرویس‌های واجد شرایط: <b>{len(eligible):,}</b>\n\nاین تغییر پس از تایید اعمال می‌شود.", kb)
+        return
+    if data == "asgncancel":
+        _pending.pop(chat_id, None)
+        await _edit(chat_id, message_id, "تخصیص لغو شد.", _admin_kb())
+        return
+    if data.startswith("asgnok:"):
+        code = data.split(":", 1)[1].upper()
+        pending = _pending.get(chat_id) or {}
+        if pending.get("action") != "proxy_assignment" or pending.get("code") != code:
+            await _answer(callback_id, "تایید منقضی شده است", True)
+            return
+        result, error = await _apply_proxy_assignment(chat_id, code)
+        _pending.pop(chat_id, None)
+        if error:
+            await _edit(chat_id, message_id, f"❗️ {error}", _admin_kb())
+            return
+        target = result["target"]
+        await _edit(chat_id, message_id, f"✅ <b>تخصیص انجام شد</b>\n\nمقصد: {target['flag']} {_e(target['country'])}\nواجد شرایط: {result['eligible']:,}\nبه‌روزرسانی‌شده: {result['updated']:,}\nردشده (همان مقصد): {result['skipped']:,}\nناموفق: {result['failed']:,}", _admin_kb())
         return
     if data.startswith("ap:"):
         try:

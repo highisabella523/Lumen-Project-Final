@@ -106,3 +106,63 @@ The removed optional transport was deleted end-to-end: Python package, relay mod
 ## Recommended follow-up
 
 Run this exact archive in a dependency-complete staging environment; then execute the full browser/mobile matrix and a dedicated Bot API test chat. Before multi-replica deployment, migrate the bot store and commerce state from JSON to a transactional database with unique redemption constraints.
+
+---
+
+# Commerce, Trial, Plan & Admin Assignment Pass — 2026-09-17
+
+## Audit result and price-pipeline root cause
+
+The Telegram store remains the single commerce implementation. Plans, order snapshots, discount application/reservation, wallet deduction, card receipt approval, and durable bot data are all in `telegram_bot.py`; service ownership and link persistence remain in `main.py` state. No separate web checkout catalogue was found.
+
+The prior defect was the discount floor: after calculating a percent/fixed discount, the code capped it to `base - 1,000`, deliberately preventing a free order. This conflicted with 100% promotions and made the price rules non-canonical. The pass replaces that branch with `_calculate_payable(base_amount, code_entry)`, the single price calculator. It clamps the base and discount safely, caps percent discounts at 100%, and returns `(payable, discount)` where both are always non-negative and `payable + discount == base`.
+
+## Discount and zero-cost behavior
+
+- `100,000` at 0%, 10%, 50%, 100%, and 125% produces `100,000`, `90,000`, `50,000`, `0`, and `0` respectively.
+- A zero-price plan remains zero under every valid promotion.
+- The order stores the canonical payable value only; the wallet path cannot deduct a negative value.
+- Zero-cost orders have a dedicated **فعال‌سازی رایگان** action. They never create a card-payment/receipt request and are rejected if a forged card-payment path is attempted.
+- Promo reservation remains exactly-once at completion. Successful zero-cost orders legitimately consume an applied promotion; cancellation, rejected receipt, stale receipt, and failed free/wallet provisioning release reservations.
+
+## Trial
+
+The canonical Trial is `150 MB` (binary `150 * 1024²` bytes), `1 day`, and `0 تومان`. `trial_used_at` is a durable field on the existing Telegram user record. The Trial is hidden after use, stale purchase callbacks are rejected server-side, and renewal does not offer Trial.
+
+The marker is written only after provisioning succeeds. `_finish_order` is protected by the existing provisioning lock, so concurrent free Trial completions can yield only one success. Failed provisioning returns the order to a safe draft state and leaves the user eligible.
+
+## Canonical user-facing plans
+
+The old environment-overridable six-plan catalogue was removed. The one canonical `DEFAULT_PLANS` list now contains exactly:
+
+| Plan | Traffic | Duration | Price |
+|---|---:|---:|---:|
+| اقتصادی | 10 GB | 25 days | 80,000 تومان |
+| استاندارد | 20 GB | 30 days | 100,000 تومان |
+| تستی | 150 MB | 1 day | رایگان |
+
+All plan menus, checkout orders, provisioning, renewal, admin plan view, and tests use that list. The Trial is excluded from renewal choices.
+
+## Admin global proxy assignment
+
+A new **🌍 تخصیص پراکسی** item is available only in the Telegram admin panel. It lists only current, already-supported locations derived from `proxy_repository.records_for_country()` and exposes country/flag only—never endpoints, IDs, or credentials. The flow requires target selection, shows server-calculated affected user/service counts, and requires an explicit confirm/cancel action.
+
+Eligibility is each persisted service link with `store_managed` and an existing Telegram owner record; users who merely opened the bot are excluded. On confirmation the target is revalidated against the live repository, eligible links are updated to the selected repository proxy, the main state is saved, and only then a bounded safe `admin_audit` entry is persisted. Repeating the same assignment is idempotent: already-targeted links are skipped. Authorization, private-chat sender binding, callback length, workflow state, and selected country are all verified server-side.
+
+## Verification
+
+### PASS
+
+- `python -m compileall -q .`
+- `tests/store_bot_contract.py`: canonical plan values; 0–100%+ pricing; zero amount; free path; Trial concurrency/lifetime; gift, promo, wallet, card, renewal, ownership, persistence; admin assignment authorization, idempotency, and audit logging.
+- Telegram callback/navigation, removed-transport, WS-only, transport registry, API route, address/SNI, countries, dashboard contract, protocol, and persistence contracts.
+- Final scans returned no old plan IDs/prices and no removed-transport references.
+
+### BLOCKED
+
+- Live Telegram Bot API, real card-transfer review, and deployed-environment validation require a configured isolated test bot, payment account, and deployment credentials; they were not invoked.
+
+### NOT TESTED
+
+- Full browser/mobile UI interaction matrix (no panel plan catalogue is present).
+- Distributed multi-replica JSON-store writes; the existing architecture is single-process for bot-commerce mutations.

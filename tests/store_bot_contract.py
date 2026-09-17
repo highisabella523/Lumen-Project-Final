@@ -144,17 +144,17 @@ async def run():
         "type": "percent", "value": 20, "max_uses": 5, "uses": 0,
         "used_by": [], "orders": [], "active": True, "expires_at": None,
     }
-    plan = bot.PLAN_BY_ID["eco30"]
+    plan = bot.PLAN_BY_ID["economic"]
     order = await bot._create_order(101, "new", plan)
     order, error = await bot._apply_discount(order["id"], 101, "off20")
-    assert not error and order["amount"] == 63_200
+    assert not error and order["amount"] == 64_000
     done, error = await bot._finish_order(order["id"], None, "wallet")
     assert not error and done["status"] == "approved"
     uid = done["service_id"]
-    assert user["balance"] == 936_800
+    assert user["balance"] == 936_000
     assert links[uid]["protocol"] == "vless-ws"
     assert links[uid]["owner_telegram_id"] == 101
-    assert links[uid]["limit_bytes"] == 30 * 1024**3
+    assert links[uid]["limit_bytes"] == 10 * 1024**3
     assert links[uid]["sub_id"] in subs and uid in subs[links[uid]["sub_id"]]["link_ids"]
     assert bot.STORE["discount_codes"]["OFF20"]["uses"] == 1
 
@@ -162,15 +162,40 @@ async def run():
     links[uid]["used_bytes"] = 10 * 1024**3
     old_expiry = datetime.now() + timedelta(days=10)
     links[uid]["expires_at"] = old_expiry.isoformat()
-    renew_plan = bot.PLAN_BY_ID["std30"]
+    renew_plan = bot.PLAN_BY_ID["standard"]
     renewal = await bot._create_order(101, "renew", renew_plan, service_id=uid)
     renewed, error = await bot._finish_order(renewal["id"], None, "wallet")
     assert not error and renewed["status"] == "approved"
-    assert links[uid]["limit_bytes"] == 80 * 1024**3  # 20 GB left + 60 GB bought
+    assert links[uid]["limit_bytes"] == 20 * 1024**3  # 0 GB left + 20 GB bought
     assert links[uid]["used_bytes"] == 0
     new_expiry = datetime.fromisoformat(links[uid]["expires_at"])
     assert timedelta(days=39, hours=23) < new_expiry - datetime.now() < timedelta(days=41)
     assert links[uid]["protocol"] == "vless-ws"
+
+    # Canonical price invariant: no valid discount can produce a negative amount.
+    assert [(p["id"], p["quota_bytes"], p["price"], p["days"]) for p in bot.PLANS] == [
+        ("economic", 10 * 1024**3, 80_000, 25),
+        ("standard", 20 * 1024**3, 100_000, 30),
+        ("trial", 150 * 1024**2, 0, 1),
+    ]
+    for percent, expected in ((0, 100_000), (10, 90_000), (50, 50_000), (100, 0), (125, 0)):
+        payable, discount = bot._calculate_payable(100_000, {"type": "percent", "value": percent})
+        assert payable == expected and discount >= 0
+    assert bot._calculate_payable(0, {"type": "percent", "value": 100}) == (0, 0)
+
+    # A free trial activates once; concurrent/stale attempts and a later expiry never reactivate it.
+    trial_user = await bot._ensure_user({"id": 303, "first_name": "Trial"})
+    trial = bot.PLAN_BY_ID["trial"]
+    a = await bot._create_order(303, "new", trial)
+    b = await bot._create_order(303, "new", trial)
+    first, second = await asyncio.gather(bot._finish_order(a["id"], None, "free"), bot._finish_order(b["id"], None, "free"))
+    assert sum(1 for result, error in (first, second) if result and not error) == 1
+    assert trial_user["trial_used_at"]
+    stale = await bot._create_order(303, "new", trial)
+    denied, error = await bot._finish_order(stale["id"], None, "free")
+    assert denied is None and "قبلاً" in error
+    # Trial uses the free route: card payment cannot be started or approved for zero.
+    assert (await bot._start_card_payment(stale["id"], 303))[0] is None
 
     # Card-to-card top-up: receipt -> admin queue -> approval, exactly once.
     topup = await bot._create_order(101, "wallet", amount=120_000)
@@ -237,6 +262,19 @@ async def run():
     assert bot.API_BASE == "https://api.telegram.org/bottest-token"
     service_url = "https:" + "//" + get_host() + "/sub/" + uid
     assert service_url.startswith("https://vpn.example.com/sub/") and service_url.endswith(uid)
+
+    # Admin global assignment uses only a live repository record, touches purchased services,
+    # is idempotent, and records safe audit metadata.
+    record = bot.proxy_repository.Record("nl-1", "http://127.0.0.1:8080", "http", "Netherlands", "NL", "🇳🇱", 95)
+    bot.proxy_repository._records = {record.id: record}
+    denied, error = await bot._apply_proxy_assignment(101, "NL")
+    assert denied is None and "ادمین" in error
+    result, error = await bot._apply_proxy_assignment(9001, "NL")
+    assert not error and result["eligible"] >= 1 and result["updated"] >= 1
+    assert links[uid]["exit_proxy_mode"] == "repository" and links[uid]["proxy_id"] == "nl-1"
+    repeated, error = await bot._apply_proxy_assignment(9001, "NL")
+    assert not error and repeated["updated"] == 0 and repeated["skipped"] >= 1
+    assert bot.STORE["admin_audit"][-1]["admin_id"] == 9001
 
     # Persistence round trip keeps money/order data.
     await bot._save_store()

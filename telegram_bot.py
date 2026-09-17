@@ -93,11 +93,13 @@ PLAN_BY_ID = {p["id"]: p for p in PLANS}
 
 def _default_store():
     return {
-        "version": 1,
+        "version": 2,
+        "poll_offset": 0,
         "users": {},
         "orders": {},
         "gift_codes": {},
         "discount_codes": {},
+        "redemption_audit": [],
         "settings": {
             "store_name": STORE_NAME,
             "card_number": os.environ.get("STORE_CARD_NUMBER", "").strip(),
@@ -202,8 +204,14 @@ async def _load_store():
             loaded = json.loads(raw)
             base = _default_store()
             for key in ("users", "orders", "gift_codes", "discount_codes"):
+                # Persistent collections are schema-checked below.
+                
                 if isinstance(loaded.get(key), dict):
                     base[key] = loaded[key]
+            if isinstance(loaded.get("redemption_audit"), list):
+                base["redemption_audit"] = loaded["redemption_audit"][-5000:]
+            if isinstance(loaded.get("poll_offset"), int) and loaded["poll_offset"] >= 0:
+                base["poll_offset"] = loaded["poll_offset"]
             if isinstance(loaded.get("settings"), dict):
                 base["settings"].update(loaded["settings"])
             # Environment variables intentionally override persisted blank/old deployment values.
@@ -326,8 +334,7 @@ def _main_kb(user_id: int):
          {"text": "🛒 خرید سرویس", "callback_data": "plans"}],
         [{"text": "🔄 تمدید سرویس", "callback_data": "renew"},
          {"text": "💰 کیف پول", "callback_data": "wallet"}],
-        [{"text": "👤 حساب من", "callback_data": "account"},
-         {"text": "📖 راهنمای اتصال", "callback_data": "guide"}],
+        [{"text": "📖 راهنمای اتصال", "callback_data": "guide"}],
     ]
     if _is_admin(user_id):
         rows.append([{"text": "🛠 پنل مدیریت فروش", "callback_data": "admin"}])
@@ -346,28 +353,6 @@ def _main_text(user: dict):
         "همه سرویس‌ها به‌صورت خودکار با پروتکل پرسرعت <b>VLESS + WS</b> ساخته می‌شوند؛ "
         "بعد از خرید فقط لینک را وارد برنامه کن و هیچ تنظیم دستی لازم نیست."
     )
-
-
-
-def _account_text(user: dict, user_id: int):
-    services = _user_services(user_id)
-    active = sum(1 for _, link in services if is_link_allowed(link))
-    return (
-        "👤 <b>حساب من</b>\n\n"
-        f"نام: {_e(user.get('first_name') or 'کاربر')}\n"
-        f"شناسه تلگرام: <code>{int(user_id)}</code>\n"
-        f"موجودی: <b>{_money(user.get('balance', 0))}</b>\n"
-        f"سرویس‌های فعال: <b>{active}</b> از {len(services)}\n\n"
-        "برای دریافت کانفیگ یا مدیریت سرویس‌ها، «سرویس‌های من» را باز کن."
-    )
-
-
-def _account_kb():
-    return {"inline_keyboard": [
-        [{"text": "📦 سرویس‌های من", "callback_data": "services"}],
-        [{"text": "💰 کیف پول", "callback_data": "wallet"}],
-        [{"text": "⬅ منوی اصلی", "callback_data": "menu"}],
-    ]}
 
 
 def _plans_kb(prefix="buy", service_id: str | None = None):
@@ -631,10 +616,7 @@ async def _apply_discount(order_id: str, user_id: int, code_text: str):
             discount = base * min(100, max(1, int(entry.get("value", 0)))) // 100
         else:
             discount = min(base, max(0, int(entry.get("value", 0))))
-        # Never allow a discount to make the payable amount negative. Zero-value
-        # orders are valid only when the configured business flow explicitly
-        # handles them; this store keeps the total bounded and deterministic.
-        discount = min(discount, max(0, base))
+        discount = min(discount, max(0, base - 1_000))
         order["discount_code"] = code
         order["discount_amount"] = discount
         order["amount"] = base - discount
@@ -931,6 +913,8 @@ async def _redeem_gift(user_id: int, text: str):
         entry.setdefault("used_by", []).append(str(user_id))
         user["balance"] = int(user.get("balance", 0)) + amount
         user.setdefault("gift_codes", []).append(code)
+        STORE.setdefault("redemption_audit", []).append({"kind": "gift", "code": code, "user_id": int(user_id), "amount": amount, "at": _iso()})
+        STORE["redemption_audit"] = STORE["redemption_audit"][-5000:]
     await _save_store()
     return amount, None
 
@@ -976,6 +960,12 @@ async def _handle_receipt_message(chat_id: int, msg: dict):
 
 async def _handle_pending_text(chat_id: int, text: str, pending: dict):
     action = pending.get("action")
+    # Keep each admin wizard in one implementation; the former duplicated branch
+    # was unreachable through the normal dispatcher and could reference stale data.
+    if action.startswith("gift_admin_"):
+        return await _admin_gift_text(chat_id, text, pending)
+    if action.startswith("promo_admin_"):
+        return await _admin_promo_text(chat_id, text, pending)
     if text in ("لغو", "/cancel"):
         if action == "receipt" and pending.get("order_id"):
             await _cancel_waiting_order(pending["order_id"], chat_id)
@@ -1041,45 +1031,6 @@ async def _handle_pending_text(chat_id: int, text: str, pending: dict):
         return True
 
 
-    if action == "gift_admin_code":
-        code = _normalize_code(text)
-        if not code or code in STORE["gift_codes"]:
-            await _send(chat_id, "کد باید ۳ تا ۳۲ کاراکتر انگلیسی/عدد و یکتا باشد. دوباره بفرست:")
-            return True
-        data["code"] = code
-        _pending[chat_id] = {"action": "gift_admin_amount", "data": data}
-        await _send(chat_id, "مبلغ شارژ کیف پول را به تومان بفرست؛ مثلاً <code>50000</code>:")
-    elif action == "gift_admin_amount":
-        value = _parse_int(text, 1_000, 20_000_000)
-        if value is None:
-            await _send(chat_id, "مبلغ نامعتبر است. عددی بین ۱٬۰۰۰ تا ۲۰٬۰۰۰٬۰۰۰ بفرست:")
-            return True
-        data["amount"] = value
-        _pending[chat_id] = {"action": "gift_admin_uses", "data": data}
-        await _send(chat_id, "حداکثر تعداد استفاده را بفرست:")
-    elif action == "gift_admin_uses":
-        value = _parse_int(text, 1, 100_000)
-        if value is None:
-            await _send(chat_id, "تعداد استفاده نامعتبر است. دوباره بفرست:")
-            return True
-        data["max_uses"] = value
-        _pending[chat_id] = {"action": "gift_admin_days", "data": data}
-        await _send(chat_id, "اعتبار کد چند روز باشد؟ عدد ۰ یعنی بدون انقضا:")
-    elif action == "gift_admin_days":
-        days = _parse_int(text, 0, 3650)
-        if days is None:
-            await _send(chat_id, "روز اعتبار نامعتبر است. دوباره بفرست:")
-            return True
-        expires = (_now() + timedelta(days=days)).isoformat() if days else None
-        async with _state_lock:
-            STORE["gift_codes"][data["code"]] = {
-                "code": data["code"], "amount": data["amount"], "max_uses": data["max_uses"],
-                "used_by": [], "active": True, "created_at": _iso(), "created_by": chat_id,
-                "expires_at": expires,
-            }
-        await _save_store()
-        _pending.pop(chat_id, None)
-        await _send(chat_id, f"✅ کد هدیه <code>{data['code']}</code> با مبلغ {_money(data['amount'])} ساخته شد.", _admin_kb())
     return True
 
 
@@ -1170,6 +1121,10 @@ async def _handle_message(msg: dict):
         await _send(chat_id, "🛠 <b>پنل مدیریت فروش</b>", _admin_kb())
         return
 
+    if text.startswith("/"):
+        await _send(chat_id, "دستور شناخته نشد. از منوی زیر استفاده کن.", _main_kb(chat_id))
+        return
+
     pending = _pending.get(chat_id)
     if pending and text and await _handle_pending_text(chat_id, text, pending):
         return
@@ -1187,11 +1142,17 @@ async def _handle_callback(cb: dict):
     callback_id = cb.get("id", "")
     data = str(cb.get("data") or "")
     from_user = cb.get("from") or {}
-    if chat_id is None:
-        await _answer(callback_id, "در چت خصوصی استفاده کن", True)
+    if chat_id is None or message.get("chat", {}).get("type", "private") != "private":
+        await _answer(callback_id, "این عمل فقط در چت خصوصی در دسترس است", True)
         return
     chat_id = int(chat_id)
-    user = await _ensure_user(from_user or {"id": chat_id})
+    if int((from_user or {}).get("id") or 0) != chat_id:
+        await _answer(callback_id, "این دکمه برای حساب دیگری است", True)
+        return
+    if not data or len(data.encode("utf-8")) > 64:
+        await _answer(callback_id, "درخواست نامعتبر است", True)
+        return
+    user = await _ensure_user(from_user)
     await _answer(callback_id)
 
     if data == "menu":
@@ -1200,9 +1161,6 @@ async def _handle_callback(cb: dict):
         return
     if data == "plans":
         await _edit(chat_id, message_id, _plans_text(), _plans_kb())
-        return
-    if data == "account":
-        await _edit(chat_id, message_id, _account_text(user, chat_id), _account_kb())
         return
     if data.startswith("buy:"):
         plan = _active_plan(data.split(":", 1)[1])
@@ -1309,7 +1267,11 @@ async def _handle_callback(cb: dict):
         await _edit(chat_id, message_id, _plans_text(f"تمدید {_e(link.get('label'))}"), _plans_kb("rplan", uid))
         return
     if data.startswith("rplan:"):
-        _, uid, plan_id = data.split(":", 2)
+        try:
+            _, uid, plan_id = data.split(":", 2)
+        except ValueError:
+            await _answer(callback_id, "انتخاب نامعتبر است", True)
+            return
         link, plan = LINKS.get(uid), _active_plan(plan_id)
         if not link or str(link.get("owner_telegram_id", "")) != str(chat_id) or not plan:
             await _answer(callback_id, "انتخاب نامعتبر است", True)
@@ -1353,7 +1315,11 @@ async def _handle_callback(cb: dict):
         await _edit(chat_id, message_id, "🛠 <b>پنل مدیریت فروش</b>", _admin_kb())
         return
     if data.startswith("ap:"):
-        page = int(data.split(":", 1)[1] or 0)
+        try:
+            page = max(0, int(data.split(":", 1)[1] or 0))
+        except ValueError:
+            await _answer(callback_id, "صفحه نامعتبر است", True)
+            return
         count = sum(1 for o in STORE["orders"].values() if o.get("status") == "pending_admin")
         await _edit(chat_id, message_id, f"🧾 پرداخت‌های در انتظار: <b>{count}</b>", _pending_orders_kb(page))
         return
@@ -1403,7 +1369,7 @@ async def _handle_callback(cb: dict):
         return
     if data == "apromo":
         _pending[chat_id] = {"action": "promo_admin_code", "data": {}}
-        await _edit(chat_id, message_id, "🏷 کد تخفیف جدید را بفرست؛ مثال: <code>OFF20</code>\nبرای ��غو /cancel را ارسال کن.")
+        await _edit(chat_id, message_id, "🏷 کد تخفیف جدید را بفرست؛ مثال: <code>OFF20</code>\nبرای لغو /cancel را ارسال کن.")
         return
     if data.startswith("ptype:"):
         pending = _pending.get(chat_id) or {}
@@ -1449,7 +1415,7 @@ async def _handle_callback(cb: dict):
 
 # ── Polling lifecycle ────────────────────────────────────────────────────────
 async def _poll_loop():
-    offset = 0
+    offset = max(0, int(STORE.get("poll_offset", 0) or 0))
     logger.info("Telegram sales bot polling started (admins: %s)", len(ADMIN_IDS))
     while _running:
         try:
@@ -1462,6 +1428,7 @@ async def _poll_loop():
                 continue
             for update in result.get("result", []):
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
+                STORE["poll_offset"] = offset
                 try:
                     if update.get("message"):
                         await _handle_message(update["message"])
@@ -1471,6 +1438,9 @@ async def _poll_loop():
                     raise
                 except Exception:
                     logger.exception("Telegram update handler failed")
+                finally:
+                    # Offset persistence is independent of a malformed update; it prevents replay storms.
+                    await _save_store()
         except asyncio.CancelledError:
             break
         except Exception:

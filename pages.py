@@ -109,25 +109,16 @@ body{font-family:'Inter','Vazirmatn','Segoe UI',sans-serif;background:var(--md-s
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 
 
-:root{
-}
-*{border-radius:0!important}
-
-/* public console */
-
-/* admin console */
-@media(prefers-reduced-motion:reduce){body::before{display:none!important}}
-
-:root{
-}
-*{border-radius:0!important}
-
-/* public console */
-
-/* admin console */
-@media(prefers-reduced-motion:reduce){body::before{display:none!important}}
-
-/* final geometry pass: square broadcast-console framing */
+/* v31 — conventional Material 3 Expressive navigation, not the former command rail. */
+.sidebar{left:16px!important;right:auto!important;width:280px!important;border-radius:28px!important;transform:none!important}
+.nav-wrap{display:block!important;padding:10px 12px 16px!important;overflow-y:auto!important}
+.nav-sec{display:block!important;margin:18px 12px 7px!important;color:var(--md-sys-color-on-surface-variant)!important;font-size:.72rem!important;font-weight:750!important;letter-spacing:.08em!important;text-transform:uppercase!important}
+.nav-it{min-height:48px!important;margin:3px 0!important;padding:10px 14px!important;display:flex!important;flex-direction:row!important;justify-content:flex-start!important;gap:12px!important;text-align:start!important;border-radius:16px!important;font-size:.88rem!important;line-height:1.2!important}
+.nav-it>i{width:24px!important;font-size:20px!important}.nav-it>span:not(.nav-badge){max-width:none!important;overflow:visible!important}
+.nav-it.on{border-radius:16px!important}.nav-badge{position:static!important;margin-left:auto!important}
+.sb-foot{display:grid!important;grid-template-columns:1fr 1fr!important}.logout-btn{grid-column:auto!important}
+.main{margin-left:312px!important;margin-right:0!important}
+@media(max-width:900px){.sidebar{left:10px!important;right:10px!important;bottom:10px!important;top:auto!important;width:auto!important;height:84px!important;border-radius:28px!important;flex-direction:row!important;transform:none!important}.logo,.sb-foot,.nav-sec{display:none!important}.nav-wrap{display:flex!important;flex-direction:row!important;overflow-x:auto!important;overflow-y:hidden!important;padding:8px!important}.nav-it{min-width:86px!important;min-height:66px!important;flex-direction:column!important;justify-content:center!important;text-align:center!important;padding:8px 4px!important;gap:4px!important;font-size:.62rem!important}.nav-it>span:not(.nav-badge){max-width:86px!important;overflow:hidden!important;text-overflow:ellipsis!important}.nav-badge{position:absolute!important;right:8px!important;top:6px!important}.main{margin-left:0!important;padding-bottom:126px!important}}
 
 </style>
 </head>
@@ -183,26 +174,6 @@ LANDING_HTML = r"""<!DOCTYPE html>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
 <style>
 *{box-sizing:border-box}html,body{margin:0;min-height:100%}:root{color-scheme:dark;--p:#bdc7ff;--on-p:#22305f;--pc:#394777;--on-pc:#dee1ff;--ter:#f2b99a;--tc:#6d3b22;--on-tc:#ffdcc8;--surface:#111318;--low:#191b21;--mid:#1d1f25;--high:#27292f;--text:#e3e2e9;--muted:#c6c5d0;--outline:#46464f;--ok:#8fd6b8;--shape:32px;--ease:cubic-bezier(.2,0,0,1)}[data-theme="light"]{color-scheme:light;--p:#52639a;--on-p:#fff;--pc:#dee1ff;--on-pc:#0c1b4b;--ter:#865228;--tc:#ffdcc8;--on-tc:#311300;--surface:#faf8ff;--low:#f4f2fa;--mid:#eeecf4;--high:#e2e1e9;--text:#1a1b20;--muted:#45464f;--outline:#c7c6d0;--ok:#176b4f}body{font-family:'Vazirmatn','Segoe UI',Arial,sans-serif;color:var(--text);background:radial-gradient(circle at 10% 90%,color-mix(in srgb,var(--ter) 10%,transparent),transparent 32rem),radial-gradient(circle at 88% 4%,color-mix(in srgb,var(--p) 16%,transparent),transparent 34rem),var(--surface);display:grid;place-items:center;padding:24px;overflow-x:hidden}.shell{width:min(1120px,100%)}.bar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}.brand{display:flex;align-items:center;gap:12px;font-weight:780}.mark{width:46px;height:46px;border-radius:16px;background:var(--pc);box-shadow:inset 0 0 0 10px color-mix(in srgb,var(--p) 48%,transparent)}.actions{display:flex;gap:8px}.icon-btn,.lang-btn{min-height:46px;border:0;border-radius:999px;background:var(--high);color:var(--text);padding:0 16px;font:700 .8rem inherit;cursor:pointer}.icon-btn{width:46px;padding:0}.grid{display:grid;grid-template-columns:1.25fr .75fr;gap:18px}.hero,.health{background:color-mix(in srgb,var(--low) 94%,transparent);border:1px solid var(--outline);border-radius:var(--shape);overflow:hidden}.hero{min-height:560px;padding:54px;display:flex;flex-direction:column;justify-content:space-between;position:relative}.eyebrow{display:inline-flex;align-items:center;gap:8px;color:var(--p);font-size:.75rem;font-weight:750;letter-spacing:.1em;text-transform:uppercase}.live-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 6px color-mix(in srgb,var(--ok) 15%,transparent)}h1{font-size:clamp(3rem,7vw,6.4rem);line-height:.9;letter-spacing:-.07em;margin:28px 0 24px;max-width:7ch}.lead{max-width:50ch;color:var(--muted);font-size:1rem;line-height:1.8}.signal-scene{position:absolute;right:-70px;bottom:-80px;width:390px;height:390px;opacity:.76;pointer-events:none}.orbit{position:absolute;inset:48px;border:1px solid color-mix(in srgb,var(--p) 46%,transparent);border-radius:50%;animation:turn 34s linear infinite}.orbit::before,.orbit::after{content:'';position:absolute;width:18px;height:18px;border-radius:6px;background:var(--p);top:20px;left:48px;box-shadow:0 0 24px color-mix(in srgb,var(--p) 45%,transparent)}.orbit::after{width:12px;height:12px;top:auto;left:auto;right:18px;bottom:80px;background:var(--ter)}.core{position:absolute;inset:124px;border-radius:44px;background:var(--pc);transform:rotate(14deg);animation:breathe 6s var(--ease) infinite alternate}.core::after{content:'';position:absolute;inset:28px;border-radius:24px;background:var(--p);opacity:.42}@keyframes turn{to{transform:rotate(1turn)}}@keyframes breathe{to{transform:rotate(20deg) scale(1.05)}}.health{padding:24px;display:flex;flex-direction:column;gap:14px}.health-head{display:flex;align-items:center;justify-content:space-between;padding:4px 4px 14px}.health-title{font-size:1.1rem;font-weight:760}.status{display:flex;align-items:center;gap:8px;background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok);padding:8px 12px;border-radius:999px;font-size:.75rem;font-weight:750}.metric{background:var(--mid);border-radius:22px;padding:20px;min-height:104px;display:flex;flex-direction:column;justify-content:space-between}.metric:nth-child(3){background:var(--pc);color:var(--on-pc)}.metric:nth-child(4){background:var(--tc);color:var(--on-tc)}.label{font-size:.72rem;letter-spacing:.07em;text-transform:uppercase;opacity:.7}.value{font-size:1.72rem;font-weight:790;letter-spacing:-.035em}.foot{margin-top:auto;padding:18px 5px 3px;color:var(--muted);font-size:.72rem;display:flex;justify-content:space-between;gap:12px}.loading{opacity:.55}@media(max-width:800px){body{padding:14px}.grid{grid-template-columns:1fr}.hero{min-height:460px;padding:34px}.health{display:grid;grid-template-columns:1fr 1fr}.health-head,.foot{grid-column:1/-1}.signal-scene{width:280px;height:280px}.orbit{inset:38px}.core{inset:94px}h1{font-size:clamp(3.2rem,16vw,5rem)}}@media(max-width:480px){.health{grid-template-columns:1fr}.health-head,.foot{grid-column:auto}.hero{padding:28px;min-height:430px}.signal-scene{right:-110px;opacity:.5}.foot{flex-direction:column}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important}}
-:root{
-}
-*{border-radius:0!important}
-
-/* public console */
-
-/* admin console */
-@media(prefers-reduced-motion:reduce){body::before{display:none!important}}
-
-:root{
-}
-*{border-radius:0!important}
-
-/* public console */
-
-/* admin console */
-@media(prefers-reduced-motion:reduce){body::before{display:none!important}}
-
-/* final geometry pass: square broadcast-console framing */
-
 </style>
 </head>
 <body>
@@ -1164,7 +1135,7 @@ body{padding-right:0}
 .create-panel{display:grid!important;grid-template-columns:minmax(220px,290px) minmax(0,1fr)!important;align-items:stretch!important;background:var(--md-sys-color-surface-container-lowest)!important;border-radius:36px!important;margin-bottom:26px!important}.cp-head{grid-column:1!important;grid-row:1!important;align-self:stretch!important;flex-direction:column!important;justify-content:flex-start!important;align-items:flex-start!important;gap:20px!important;padding:36px 28px!important;border-radius:36px 0 0 36px!important;background:linear-gradient(155deg,var(--md-sys-color-primary-container),color-mix(in srgb,var(--md-sys-color-tertiary-container) 56%,var(--md-sys-color-primary-container)))!important;position:relative!important;overflow:hidden!important}.cp-head::after{content:'';position:absolute;left:-70px;bottom:-85px;width:240px;height:240px;border-radius:50%;border:36px solid color-mix(in srgb,var(--md-sys-color-primary) 15%,transparent);opacity:.9}.cp-head-icon{width:68px!important;height:68px!important;border-radius:26px 26px 10px 26px!important;font-size:30px!important;box-shadow:0 18px 36px color-mix(in srgb,var(--md-sys-color-on-primary-container) 14%,transparent)!important}.cp-head-title{font-size:1.75rem!important;line-height:1.12!important;letter-spacing:-.045em!important;max-width:8ch}.cp-head-sub{font-size:.82rem!important;line-height:1.75!important;max-width:22ch!important}.cp-head-text{z-index:1!important}.cp-body{grid-column:2!important;display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:14px!important;padding:22px!important}.create-panel .cp-row{display:contents!important}.create-panel .cp-body>.cp-block,.create-panel .endpoint-studio,.create-panel .cp-footer,.create-panel .cp-block:has(#nl-speed){grid-column:1/-1!important}.create-panel .cp-block{margin:0!important;padding:20px!important;border-radius:22px!important;background:var(--md-sys-color-surface-container-low)!important;border:1px solid transparent!important;transition:border-color 180ms,transform 260ms var(--md-sys-motion-easing-emphasized)!important}.create-panel .cp-block:focus-within{border-color:var(--md-sys-color-primary)!important;transform:translateY(-2px)!important}.cp-block-label{font-size:.73rem!important;letter-spacing:.055em!important;text-transform:uppercase!important}.cp-mini-row{margin-top:10px!important}.field-caption{font-size:.7rem;line-height:1.55;color:var(--md-sys-color-on-surface-variant);margin-top:10px}.endpoint-studio{padding:0!important;background:var(--md-sys-color-surface-container)!important;border:0!important}.endpoint-studio-head{padding:22px 24px!important}.endpoint-grid{padding:18px!important}.endpoint-field{background:var(--md-sys-color-surface-container-lowest)!important}.cp-footer{display:grid!important;grid-template-columns:1fr auto!important;align-items:center!important;gap:18px!important;padding:18px 4px 4px!important}.cp-footer-note{font-size:.72rem!important;line-height:1.6!important}.cp-submit-btn{min-width:190px!important;min-height:56px!important;border-radius:20px 20px 8px 20px!important;box-shadow:0 14px 30px color-mix(in srgb,var(--md-sys-color-primary) 18%,transparent)!important}
 .config-proxy-studio{grid-column:1/-1!important;background:var(--md-sys-color-surface-container)!important;padding:0!important;overflow:hidden}.config-proxy-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:20px 22px;border-bottom:1px solid var(--md-sys-color-outline-variant)}.config-scope-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 11px;border-radius:999px;background:var(--md-sys-color-tertiary-container);color:var(--md-sys-color-on-tertiary-container);font-size:.68rem;font-weight:750;white-space:nowrap}.config-proxy-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.repository-refresh-btn{min-height:40px;border:0;border-radius:999px;padding:0 13px;align-items:center;gap:6px;background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary);font:700 .7rem inherit;cursor:pointer}.repository-refresh-btn:disabled{opacity:.55;cursor:wait}.config-proxy-grid{padding:18px;display:grid;grid-template-columns:minmax(210px,.7fr) 1.3fr;gap:14px}.proxy-mode-card,.config-proxy-fields{padding:16px;border-radius:18px;background:var(--md-sys-color-surface-container-lowest)}.proxy-mode-card label,.config-proxy-fields label{display:block;font-size:.72rem;font-weight:700;margin-bottom:8px}.config-proxy-fields{grid-template-columns:1fr 130px;gap:12px}.config-proxy-fields:not([style*="display: none"]){display:grid!important}.config-proxy-fields textarea{resize:vertical;min-height:70px}.proxy-safe-note{margin:0 18px 18px;padding:13px 15px;display:flex;gap:9px;align-items:flex-start;border-radius:16px;background:color-mix(in srgb,var(--green) 12%,var(--md-sys-color-surface-container-low));color:var(--md-sys-color-on-surface-variant);font-size:.72rem;line-height:1.6}.proxy-safe-note i{color:var(--green);font-size:18px}.route-proxy{margin:10px 18px 0;min-height:38px;padding:8px 11px;border-radius:13px;display:flex;align-items:center;gap:7px;font-size:.68rem;font-weight:700;background:var(--md-sys-color-surface-container-high);color:var(--md-sys-color-on-surface-variant)}.route-proxy.enabled{background:var(--md-sys-color-tertiary-container);color:var(--md-sys-color-on-tertiary-container)}.route-proxy code{margin-inline-start:auto;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr}.config-proxy-edit{padding:13px;border-radius:16px;background:var(--md-sys-color-surface-container-low)}@media(max-width:639px){.config-proxy-head{align-items:flex-start;flex-direction:column}.config-proxy-grid{grid-template-columns:1fr}.config-proxy-fields:not([style*="display: none"]){grid-template-columns:1fr!important}}
 .proxy-test-detail{margin-top:7px;white-space:pre-line;font-size:.72rem;line-height:1.55;color:var(--t3)}.managed-safe,.custom-danger{min-height:48px;padding:11px 13px;border-radius:14px;display:flex;align-items:center;gap:7px;font-size:.68rem;font-weight:700;line-height:1.45}.managed-safe{background:color-mix(in srgb,var(--green) 14%,var(--md-sys-color-surface-container));color:var(--green-t)}.custom-danger{background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container)}.route-proxy.custom{background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container)}
-/* Configs become a card gallery, not a compressed row/table. */
+.ml-preferred-route{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-radius:var(--md-sys-shape-corner-medium,12px);background:var(--md-sys-color-primary-container);color:var(--md-sys-color-on-primary-container);font-size:.7rem;font-weight:750}.ml-preferred-route small{font-size:.64rem;font-weight:650;opacity:.86}/* Configs become a card gallery, not a compressed row/table. */
 .cfg-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:var(--v12-card-gap)!important}.route-card{min-width:0;display:flex;flex-direction:column;background:var(--md-sys-color-surface-container-low);border:1px solid var(--md-sys-color-outline-variant);border-radius:30px;overflow:hidden;transition:transform 320ms var(--md-sys-motion-easing-emphasized),box-shadow 320ms,border-color 180ms}.route-card:hover{transform:translateY(-5px);border-color:var(--md-sys-color-outline);box-shadow:var(--shadow)}.route-card.is-off{opacity:.7}.route-card.is-exp{border-color:color-mix(in srgb,var(--md-sys-color-tertiary) 46%,var(--md-sys-color-outline-variant))}.route-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:22px 22px 16px}.route-title-wrap{display:flex;align-items:flex-start;gap:12px;min-width:0}.route-status-light{width:12px;height:12px;margin-top:6px;border-radius:50%;background:var(--md-sys-color-error);box-shadow:0 0 0 6px color-mix(in srgb,var(--md-sys-color-error) 13%,transparent);flex-shrink:0}.route-status-light.on{background:var(--green);box-shadow:0 0 0 6px color-mix(in srgb,var(--green) 14%,transparent)}.route-label{font:750 1.06rem/1.35 var(--md-ref-typeface-brand);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.route-remark{display:flex;align-items:center;gap:6px;margin-top:5px;color:var(--md-sys-color-on-surface-variant);font-size:.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.route-remark i{color:var(--md-sys-color-tertiary)}.route-state{min-height:40px;border:0;border-radius:999px;padding:0 13px;display:flex;align-items:center;gap:6px;background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container);font:700 .7rem inherit;cursor:pointer;flex-shrink:0}.route-state.on{background:var(--green-bg);color:var(--green-t)}.route-network{margin:0 14px;padding:16px;display:grid;grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr) auto;align-items:center;gap:10px;background:var(--md-sys-color-surface-container-high);border-radius:20px}.route-network>div{min-width:0}.route-network span,.route-data span{display:block;font-size:.62rem;letter-spacing:.07em;text-transform:uppercase;color:var(--md-sys-color-on-surface-variant);margin-bottom:4px}.route-network strong{display:block;font:650 .76rem/1.35 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.route-arrow{color:var(--md-sys-color-tertiary);font-size:18px}.route-port{padding-inline-start:10px;border-inline-start:1px solid var(--md-sys-color-outline-variant)}.route-data{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:10px;padding:16px 18px}.route-usage{min-width:0}.route-data-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.route-data-head b{font-size:.7rem}.route-meter{height:6px;margin-top:10px;border-radius:99px;background:var(--md-sys-color-surface-container-highest);overflow:hidden}.route-meter i{height:100%;display:block;background:var(--md-sys-color-primary);border-radius:inherit}.route-fact{padding-inline-start:10px;border-inline-start:1px solid var(--md-sys-color-outline-variant);min-width:0}.route-fact strong{font-size:.77rem;white-space:nowrap}.route-fact .exp-chip{font-size:.64rem!important;padding:5px 7px!important}.route-uuid{margin:0 18px 16px;min-height:42px;border:1px dashed var(--md-sys-color-outline-variant);border-radius:14px;background:transparent;color:var(--md-sys-color-on-surface-variant);display:flex;align-items:center;gap:8px;padding:0 12px;cursor:pointer}.route-uuid code{flex:1;min-width:0;text-align:left;direction:ltr;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.68rem}.route-uuid span{font-size:.66rem;font-weight:700;color:var(--md-sys-color-primary)}.route-actions{display:grid;grid-template-columns:minmax(125px,1.2fr) minmax(145px,1fr) repeat(4,48px);gap:7px;padding:12px;background:var(--md-sys-color-surface-container);border-top:1px solid var(--md-sys-color-outline-variant)}.route-action{min-height:48px;border:0;border-radius:16px;background:var(--md-sys-color-surface-container-highest);color:var(--md-sys-color-on-surface);display:flex;align-items:center;justify-content:center;gap:7px;padding:0 12px;cursor:pointer;font:700 .7rem inherit;transition:transform 160ms var(--md-sys-motion-easing-emphasized),border-radius 160ms,background 160ms}.route-action:hover{transform:translateY(-2px)}.route-action:active{transform:scale(.96);border-radius:10px}.route-action.primary{background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary);border-radius:18px 18px 7px 18px}.route-action.secondary{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}.route-action.compact{padding:0}.route-action.danger{background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container)}
 /* RTL and keyboard */
 [dir="rtl"] .cp-head{border-radius:0 36px 36px 0!important}[dir="rtl"] .route-arrow{transform:rotate(180deg)}[dir="rtl"] .route-uuid code{text-align:right;direction:ltr}[dir="rtl"] .endpoint-preview>i{transform:rotate(180deg)}
@@ -1178,28 +1149,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 @media(max-width:639px){.cp-body{grid-template-columns:1fr!important;padding:14px!important}.create-panel .cp-body>.cp-block,.create-panel .cp-block,.create-panel .endpoint-studio,.create-panel .cp-footer{grid-column:1!important}.cp-footer{grid-template-columns:1fr!important}.cp-submit-btn{width:100%!important}.route-network{grid-template-columns:1fr 20px 1fr!important}.route-port{grid-column:1/-1;border-inline-start:0;border-top:1px solid var(--md-sys-color-outline-variant);padding:10px 0 0}.route-data{grid-template-columns:1fr 1fr!important}.route-usage{grid-column:1/-1}.route-fact:nth-child(2){border-inline-start:0;padding-inline-start:0}.route-actions{grid-template-columns:1fr 1fr repeat(2,48px)!important}.route-action.compact:nth-last-child(-n+2){grid-row:2}.route-action span{font-size:.67rem}.route-head{padding:18px}.endpoint-grid{grid-template-columns:1fr!important}.endpoint-preview>i{transform:rotate(90deg)!important}.main{padding-left:10px!important;padding-right:10px!important}.topbar{padding:14px!important}.tb-title{font-size:1.3rem!important}}
 
 .update-available-btn{min-height:44px;border:0;border-radius:999px;padding:0 16px;align-items:center;gap:8px;background:var(--md-sys-color-tertiary-container);color:var(--md-sys-color-on-tertiary-container);font:750 .76rem var(--md-ref-typeface-plain);cursor:pointer;animation:update-pulse 2.4s ease-in-out infinite}.update-available-btn i{font-size:18px}@keyframes update-pulse{50%{box-shadow:0 0 0 8px color-mix(in srgb,var(--md-sys-color-tertiary) 10%,transparent)}}
-
-/* Lumen Orbit / M3 Expressive structural layer */
-@media(max-width:599px){.orbit-online,.orbit-top #lang-mob-btn{display:none}.orbit-intro{align-items:flex-start;flex-direction:column}.orbit-intro h1{font-size:2.7rem}.orbit-health{grid-template-columns:1fr;padding:24px 24px 0}.orbit-rings{width:80px;height:80px}.orbit-health footer{grid-template-columns:1fr;margin:0 -24px}.orbit-flow{display:block}.orbit-route{padding:22px;margin-bottom:12px}.orbit-route>div{display:grid}.orbit-pulse{grid-template-columns:1fr 1fr}.orbit-pulse>div:first-child{grid-column:1/-1}.orbit-insights{display:block}.orbit-insights article{margin-bottom:12px;padding:18px}.orbit-trust{padding:24px 8px}.orbit-trust-list{grid-template-columns:1fr}.psi-grid{grid-template-columns:1fr}.endpoint-grid{grid-template-columns:1fr!important}.route-actions{grid-template-columns:1fr 1fr!important}.route-action.primary,.route-action.secondary{grid-column:1/-1!important}.modal,.modal-v2{width:calc(100vw - 16px)!important}}
-.nav-it>span:not(.nav-badge){max-width:none!important;white-space:normal!important;overflow:visible!important}.orbit-wordmark{min-width:150px}.orbit-top .orbit-icon{flex:0 0 44px}.orbit-route p,.orbit-health p{line-height:1.55}.orbit-health footer span:last-child{border-inline-end:0}.orbit-intro>div:last-child{display:flex;gap:8px;align-items:center}@media(max-width:599px){.orbit-intro>div:last-child{width:100%}.orbit-refresh{width:100%;justify-content:center}.orbit-top{padding-inline:10px}.orbit-wordmark{min-width:0}.orbit-wordmark b{font-size:.9rem}}:root{
-}
-*{border-radius:0!important}
-
-/* public console */
-
-/* admin console */
-@media(prefers-reduced-motion:reduce){body::before{display:none!important}}
-
-:root{
-}
-*{border-radius:0!important}
-
-/* public console */
-
-/* admin console */
-@media(prefers-reduced-motion:reduce){body::before{display:none!important}}
-
-/* final geometry pass: square broadcast-console framing */
 
 </style>
 </head>
@@ -1361,10 +1310,104 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
     </div>
   </div>
 </div>
-<header class="orbit-top"><button id="open-sb" class="orbit-icon" aria-label="Open navigation"><i class="ti ti-menu-2"></i></button><div class="orbit-wordmark"><b>Lumen</b><small>Network workspace</small></div><span class="orbit-online"><i></i>Relay online</span><button id="lang-mob-btn" class="orbit-icon" onclick="toggleLanguage()" aria-label="Change language"><i class="ti ti-language"></i></button><button id="theme-mob-btn" class="orbit-icon" onclick="toggleTheme()" aria-label="Change theme"><i class="ti ti-sun" id="theme-mob-icon"></i></button></header><div class="overlay" id="overlay"></div>
-<aside class="sidebar" id="sb"><div class="orbit-brand"><span><i class="ti ti-bolt"></i></span><div><b>Lumen</b><small>Network workspace · v28</small></div><button class="sb-close" id="close-sb"><i class="ti ti-x"></i></button></div><nav class="nav-wrap" aria-label="Workspace navigation"><div class="nav-sec">Operate</div><div class="nav-it on" data-pg="overview"><i class="ti ti-sparkles"></i><span>Today</span></div><div class="nav-it" data-pg="links"><i class="ti ti-route"></i><span>Routes</span><span class="nav-badge" id="links-nb">0</span></div><div class="nav-it" data-pg="subgroups"><i class="ti ti-folders"></i><span>Delivery groups</span><span class="nav-badge" id="subs-nb">0</span></div><div class="nav-it" data-pg="subscriptions"><i class="ti ti-broadcast"></i><span>Subscriptions</span></div><div class="nav-sec">Understand</div><div class="nav-it" data-pg="connections"><i class="ti ti-activity-heartbeat"></i><span>Live sessions</span><span class="nav-badge" id="conns-nb">0</span></div><div class="nav-it" data-pg="traffic"><i class="ti ti-chart-histogram"></i><span>Traffic story</span></div><div class="nav-it" data-pg="logs"><i class="ti ti-timeline"></i><span>Timeline</span></div><div class="nav-it" data-pg="errors"><i class="ti ti-alert-circle"></i><span>Issues</span></div><div class="nav-sec">Manage</div><div class="nav-it" data-pg="security"><i class="ti ti-shield-check"></i><span>Trust center</span></div><div class="nav-it" data-pg="testws"><i class="ti ti-flask"></i><span>Connection lab</span></div><div class="nav-it" data-pg="settings"><i class="ti ti-settings-2"></i><span>Settings</span></div></nav><div class="sb-foot"><button class="lang-switch" onclick="toggleLanguage()"><i class="ti ti-language"></i><span id="lang-label">فارسی</span></button><button class="theme-btn" onclick="toggleTheme()"><i class="ti ti-moon" id="theme-icon"></i><span id="theme-label">Light mode</span></button><button class="logout-btn" id="logout-btn"><i class="ti ti-logout"></i><span>Sign out</span></button></div></aside>
+<div class="mob-top">
+  <div class="ml">
+    <div class="mob-logo"><i class="ti ti-shield-bolt"></i></div>
+    <span class="mob-title">Lumen Relay</span>
+  </div>
+  <div class="mob-right">
+    <button class="theme-mob" id="lang-mob-btn" onclick="toggleLanguage()" aria-label="Change language"><i class="ti ti-language"></i></button>
+    <button class="theme-mob" id="theme-mob-btn" onclick="toggleTheme()" aria-label="Change theme"><i class="ti ti-sun" id="theme-mob-icon"></i></button>
+    <button class="menu-btn" id="open-sb" aria-label="Open navigation"><i class="ti ti-layout-bottombar"></i></button>
+  </div>
+</div>
+<div class="overlay" id="overlay"></div>
+<aside class="sidebar" id="sb">
+  <button class="sb-close" id="close-sb"><i class="ti ti-x"></i></button>
+  <div class="logo">
+    <div class="logo-img"><i class="ti ti-shield-bolt"></i></div>
+    <div><div class="logo-name">Lumen Relay</div><div class="logo-sub">Command Console · v28</div></div>
+  </div>
+  <nav class="nav-wrap" aria-label="Workspace navigation">
+    <div class="nav-sec">Workspace</div>
+    <div class="nav-it on" data-pg="overview" title="Control room"><i class="ti ti-command"></i><span>Control room</span></div>
+    <div class="nav-it" data-pg="links" title="Route studio"><i class="ti ti-route-alt-left"></i><span>Route studio</span><span class="nav-badge" id="links-nb">0</span></div>
+    <div class="nav-it" data-pg="subscriptions" title="Subscriptions"><i class="ti ti-rss"></i><span>Subscriptions</span></div>
+    <div class="nav-it" data-pg="subgroups" title="Sub Groups"><i class="ti ti-folders"></i><span>Sub Groups</span><span class="nav-badge" id="subs-nb">0</span></div>
+    <div class="nav-sec">Observe</div>
+    <div class="nav-it" data-pg="connections" title="Connections"><i class="ti ti-plug-connected"></i><span>Connections</span><span class="nav-badge" id="conns-nb">0</span></div>
+    <div class="nav-it" data-pg="traffic" title="Traffic"><i class="ti ti-chart-area-line"></i><span>Traffic</span></div>
+    <div class="nav-it" data-pg="logs" title="Activity Log"><i class="ti ti-timeline-event"></i><span>Activity Log</span></div>
+    <div class="nav-it" data-pg="errors" title="Errors"><i class="ti ti-alert-hexagon"></i><span>Errors</span></div>
+    <div class="nav-sec">Tools</div>
+    <div class="nav-it" data-pg="security" title="Security"><i class="ti ti-shield-lock"></i><span>Security</span></div>
+    <div class="nav-it" data-pg="testws" title="WebSocket Test"><i class="ti ti-wave-sine"></i><span>WebSocket Test</span></div>
+    <div class="nav-it" data-pg="settings" title="Settings"><i class="ti ti-adjustments-horizontal"></i><span>Settings</span></div>
+  </nav>
+  <div class="sb-foot">
+    <button class="lang-switch" onclick="toggleLanguage()" title="Change language"><i class="ti ti-language"></i><span id="lang-label">فارسی</span></button>
+    <button class="theme-btn" onclick="toggleTheme()" title="Change theme"><i class="ti ti-moon" id="theme-icon"></i><span id="theme-label">Light mode</span></button>
+    <button class="logout-btn" id="logout-btn" title="Sign out"><i class="ti ti-logout"></i><span>Sign out</span></button>
+  </div>
+</aside>
 <main class="main">
-<section class="pg on" id="pg-overview"><header class="orbit-intro"><div><small>CURRENT MISSION</small><h1>Your relay,<br>at a glance</h1><p id="last-upd">Loading live network state…</p></div><div><button id="update-available-btn" class="update-available-btn" style="display:none" onclick="applyLatestUpdate()">Update available</button><button class="orbit-refresh" onclick="refreshAll()"><i class="ti ti-refresh"></i>Refresh</button></div></header><section class="orbit-health"><div class="orbit-rings"><i class="ti ti-shield-check"></i></div><div><small>PRIMARY ROUTE</small><h2>VLESS over WebSocket is ready</h2><p>Authentication, subscriptions, and the primary relay are operational.</p></div><b><i></i>Active</b><footer><span>Uptime<strong id="uptime-badge">—</strong></span><span>Relative load<strong id="bw-pct">—%</strong><em class="spbar"><i class="spfill" id="bw-bar"></i></em></span><span>Proxy repository<strong id="sr-repo">—</strong></span></footer></section><div class="orbit-flow"><section class="orbit-route"><label><i class="ti ti-route"></i> QUICK DELIVERY <b>TLS 443 · WS</b></label><h2>Default connection</h2><p>Copy the live route, scan it, or build a policy-controlled connection.</p><code id="vless-main">Fetching live configuration…</code><div><button class="btn btn-p" onclick="cpText('vless-main')"><i class="ti ti-copy"></i>Copy route</button><button class="btn btn-g" onclick="qrFor('vless-main')"><i class="ti ti-qrcode"></i>Show QR</button><button class="btn btn-o" onclick="navTo('links')">Open route studio</button></div></section><aside class="orbit-pulse"><div><small>LIVE PULSE</small><strong id="m-conns">—</strong><span>active connections</span></div><div><small>Total traffic</small><strong id="m-traffic">—</strong></div><div><small>Active configs</small><strong id="m-alinks">—</strong><span id="m-lsub">of total</span></div><div><small>Delivery groups</small><strong id="m-subs">—</strong></div></aside></div><section class="orbit-insights"><article><header><div><small>TRAFFIC RHYTHM</small><h2>Hourly flow</h2></div><button onclick="navTo('traffic')">Explore traffic</button></header><div class="ch"><canvas id="ch1"></canvas></div></article><article><header><div><small>CONFIG MIX</small><h2>Distribution</h2></div></header><div class="ch-sm"><canvas id="ch2"></canvas></div></article></section><section class="orbit-trust"><div><small>TRUST SIGNALS</small><h2>Core capabilities are protected</h2><p>Technical detail stays available without competing with the primary state.</p></div><div class="orbit-trust-list"><span><i class="ti ti-key"></i>UUID authentication<b>Strict</b></span><span><i class="ti ti-plug-connected"></i>VLESS / WS tunnel<b>Active</b></span><span><i class="ti ti-broadcast"></i>Subscription API<b>Active</b></span><span><i class="ti ti-clock"></i>Service uptime<b id="uptime-inline">—</b></span></div><details><summary>Config summary <b id="lsummary-badge">0</b></summary><div id="lsummary">—</div></details></section><div class="dash-footer">Lumen Relay · Version 28.0</div></section>
+<section class="pg on" id="pg-overview">
+  <div class="topbar">
+    <div><div class="tb-title"><i class="ti ti-layout-dashboard"></i> Relay overview</div><div class="tb-sub" id="last-upd">Loading...</div></div>
+    <div class="tb-right">
+      <span class="badge bg-green"><span class="dot dg pulse"></span> Active</span>
+      <span class="badge bg-blue" id="uptime-badge">—</span>
+      <button class="update-available-btn" id="update-available-btn" style="display:none" onclick="applyLatestUpdate()"><i class="ti ti-download"></i><span>Update to new version</span></button>
+      <button class="btn btn-p btn-sm" onclick="refreshAll()"><i class="ti ti-refresh"></i> Refresh</button>
+    </div>
+  </div>
+  <div class="metrics">
+    <div class="metric"><div class="m-icon"><i class="ti ti-plug-connected"></i></div><div class="m-label">Active connections</div><div class="m-val" id="m-conns">—</div><div class="m-sub"><span class="dot dg pulse"></span> WebSocket live</div></div>
+    <div class="metric"><div class="m-icon"><i class="ti ti-transfer"></i></div><div class="m-label">Total traffic</div><div class="m-val" id="m-traffic">—<span class="m-unit">MB</span></div><div class="m-sub">since start-up</div></div>
+    <div class="metric suc"><div class="m-icon suc"><i class="ti ti-link"></i></div><div class="m-label">Active configs</div><div class="m-val" id="m-alinks">—</div><div class="m-sub" id="m-lsub">of total</div></div>
+    <div class="metric pur"><div class="m-icon pur"><i class="ti ti-folders"></i></div><div class="m-label">Sub Groups</div><div class="m-val" id="m-subs">—</div><div class="m-sub">Active</div></div>
+  </div>
+  <div class="vless-box">
+    <div class="vl-header">
+      <div class="vl-title"><i class="ti ti-link"></i> Default link (no limits)</div>
+      <span class="badge bg-blue"><span class="dot db"></span> TLS 443 · WS</span>
+    </div>
+    <div class="vl-code" id="vless-main">Fetching...</div>
+    <div class="vl-actions">
+      <button class="btn btn-p" onclick="cpText('vless-main')"><i class="ti ti-copy"></i> Copy</button>
+      <button class="btn btn-g" onclick="qrFor('vless-main')"><i class="ti ti-qrcode"></i> QR</button>
+      <button class="btn btn-o" onclick="navTo('links')"><i class="ti ti-link-plus"></i> Limited configs</button>
+      <button class="btn btn-pur" onclick="navTo('subgroups')"><i class="ti ti-folders"></i> Sub Groups</button>
+    </div>
+  </div>
+  <div class="g3">
+    <div class="card"><div class="card-title"><i class="ti ti-chart-area"></i> Hourly traffic (MB)</div><div class="ch"><canvas id="ch1"></canvas></div></div>
+    <div class="card"><div class="card-title"><i class="ti ti-chart-donut"></i> Distribution</div><div class="ch-sm"><canvas id="ch2"></canvas></div></div>
+  </div>
+  <div class="g2">
+    <div class="card">
+      <div class="card-title"><i class="ti ti-activity"></i> Service status</div>
+      <div class="sr"><span class="sr-k"><i class="ti ti-shield-check"></i> UUID Auth</span><span class="sr-v" style="color:var(--green-t)">● Active · strict</span></div>
+      <div class="sr"><span class="sr-k"><i class="ti ti-circle-check"></i> VLESS / WS Tunnel</span><span class="sr-v" style="color:var(--green-t)">● Active</span></div>
+      <div class="sr"><span class="sr-k"><i class="ti ti-folders"></i> Sub Groups</span><span class="sr-v" style="color:var(--green-t)">● Active v28</span></div>
+      <div class="sr"><span class="sr-k"><i class="ti ti-rss"></i> Subscription API</span><span class="sr-v" style="color:var(--green-t)">● Active</span></div>
+      <div class="sr"><span class="sr-k"><i class="ti ti-database-share"></i> Proxy repository</span><span class="sr-v" id="sr-repo">—</span></div>
+      <div class="sr"><span class="sr-k"><i class="ti ti-clock"></i> Uptime</span><span class="sr-v" id="uptime-inline">—</span></div>
+      <div class="sr" style="flex-direction:column;align-items:flex-start;gap:4px">
+        <div style="width:100%;display:flex;justify-content:space-between"><span class="sr-k"><i class="ti ti-gauge"></i> Relative load</span><span class="sr-v" id="bw-pct">—%</span></div>
+        <div class="spbar" style="width:100%"><div class="spfill" id="bw-bar" style="width:0%"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title"><i class="ti ti-list"></i> Config summary <span class="ml-auto badge bg-blue" id="lsummary-badge">0</span></div>
+      <div id="lsummary">—</div>
+    </div>
+  </div>
+  <div class="dash-footer">
+    <span class="df-text">Lumen Relay · Version 28.0</span>
+    
+  </div>
+</section>
 <section class="pg" id="pg-links">
   <div class="topbar">
     <div><div class="tb-title"><i class="ti ti-route-alt-left"></i> Route studio</div><div class="tb-sub">Compose, inspect, and deliver every connection from one workspace</div></div>
@@ -2284,7 +2327,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   "Update to v": "آپدیت به نسخه ",
   "No password": "بدون رمز",
   "Create token": "ساخت توکن"
-,"Network workspace": "فضای کاری شبکه", "Relay online": "رله آنلاین است", "Operate": "عملیات", "Today": "امروز", "Routes": "مسیرها", "Delivery groups": "گروه‌های تحویل", "Understand": "پایش", "Live sessions": "نشست‌های زنده", "Traffic story": "روند ترافیک", "Timeline": "خط زمانی", "Issues": "مشکلات", "Manage": "مدیریت", "Trust center": "مرکز امنیت", "Connection lab": "آزمایشگاه اتصال", "CURRENT MISSION": "وضعیت کنونی", "Your relay,": "رله شما،", "at a glance": "در یک نگاه", "Loading live network state…": "در حال دریافت وضعیت زنده شبکه…", "Update available": "به‌روزرسانی آماده است", "PRIMARY ROUTE": "مسیر اصلی", "VLESS over WebSocket is ready": "VLESS روی WebSocket آماده است", "Authentication, subscriptions, and the primary relay are operational.": "احراز هویت، اشتراک‌ها و رله اصلی در وضعیت عملیاتی هستند.", "Relative load": "بار نسبی", "QUICK DELIVERY": "تحویل سریع", "Default connection": "اتصال پیش‌فرض", "Copy the live route, scan it, or build a policy-controlled connection.": "مسیر زنده را کپی یا اسکن کنید، یا اتصالی با سیاست‌های دلخواه بسازید.", "Fetching live configuration…": "در حال دریافت کانفیگ زنده…", "Copy route": "کپی مسیر", "Show QR": "نمایش QR", "Open route studio": "باز کردن استودیوی مسیر", "LIVE PULSE": "نبض زنده", "active connections": "اتصال فعال", "TRAFFIC RHYTHM": "ریتم ترافیک", "Hourly flow": "جریان ساعتی", "Explore traffic": "بررسی ترافیک", "CONFIG MIX": "ترکیب کانفیگ‌ها", "TRUST SIGNALS": "نشانه‌های اعتماد", "Core capabilities are protected": "قابلیت‌های اصلی محافظت می‌شوند", "Technical detail stays available without competing with the primary state.": "جزئیات فنی در دسترس می‌مانند، بدون آن‌که وضعیت اصلی را پنهان کنند.", "UUID authentication": "احراز هویت UUID", "Service uptime": "زمان فعالیت سرویس", "Live session details": "جزئیات نشست زنده", "Operational issue": "مشکل عملیاتی", "Primary route protected": "مسیر اصلی محافظت شده","Tunnel available": "تونل در دسترس است", "Tunnel active": "تونل فعال است", "Intentionally disabled": "عمداً غیرفعال شده", "Core unavailable": "Core در دسترس نیست", "Reduced capability": "قابلیت محدود", "Starting tunnel": "در حال راه‌اندازی تونل", "Reconnecting": "در حال اتصال دوباره", "State unknown": "وضعیت نامشخص", "Tunnel failed": "تونل ناموفق بود", "Core availability": "دسترسی Core", "Selected location": "موقعیت انتخاب‌شده", "Tunnel setup": "راه‌اندازی تونل", "Session age": "عمر نشست", "Remaining lifetime": "زمان باقی‌مانده", "Next rotation": "چرخش بعدی", "Rotation count": "تعداد چرخش", "TCP tunnel health": "سلامت تونل TCP", "UDP tunnel health": "سلامت تونل UDP", "Exit IP": "IP خروجی", "Exit region": "منطقه خروجی"}</script>
+}</script>
 <script>
 const I18N_FA=JSON.parse(document.getElementById('dashboard-i18n').textContent);
 let uiLang=localStorage.getItem('lumen-ui-lang')||'en';
@@ -2484,7 +2527,6 @@ function showProxyTestResult(prefix,proxyId){
     'Last tested: '+(result.tested_at||'—')
   ].filter(Boolean)).join('\n');
 }
-
 function scheduleProxyRetry(state){
   if(_proxyRetryT){clearTimeout(_proxyRetryT);_proxyRetryT=null}
   if(state==='loading')_proxyRetryT=setTimeout(()=>loadProxyCatalog(),3000);
@@ -2627,7 +2669,7 @@ function navTo(name){
   if(loaders[name])loaders[name]();
   closeSb();window.scrollTo({top:0,behavior:'smooth'});
 }
-document.querySelectorAll('.nav-it').forEach(el=>el.addEventListener('click',()=>navTo(el.dataset.pg)));
+document.querySelectorAll('.nav-it').forEach(el=>{el.tabIndex=0;el.setAttribute('role','button');el.addEventListener('click',()=>navTo(el.dataset.pg));el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();navTo(el.dataset.pg)}})});
 function openModal(id){document.getElementById(id).classList.add('open')}
 function closeModal(id){document.getElementById(id).classList.remove('open')}
 let prevTraf=0,ch1,ch2,ch3;
@@ -3617,24 +3659,6 @@ button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid var(-
 *::-webkit-scrollbar{width:9px;height:9px}
 *::-webkit-scrollbar-track{background:transparent}
 *::-webkit-scrollbar-thumb{background:rgba(142,142,147,.35);border-radius:99px;border:2px solid transparent;background-clip:content-box}
-
-/* Lumen modern navigation baseline: clean, responsive, non-retro. */
-:root{--nav-width:248px;--surface:#f8fafc;--surface-strong:#ffffff;--ink:#172033;--muted:#667085;--line:#e4e7ec;--accent:#2563eb;--accent-soft:#eff6ff;--success:#15803d}
-
-/* Lumen modern navigation baseline: clean, responsive, non-retro. */
-:root{--nav-width:248px;--surface:#f8fafc;--surface-strong:#ffffff;--ink:#172033;--muted:#667085;--line:#e4e7ec;--accent:#2563eb;--accent-soft:#eff6ff;--success:#15803d}
-body:has(.sidebar){font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;background:var(--surface)!important;color:var(--ink)!important;letter-spacing:normal!important}
-body:has(.sidebar)::before,body:has(.sidebar)::after{display:none!important}
-body:has(.sidebar) .sidebar{width:var(--nav-width)!important;left:20px!important;top:20px!important;bottom:20px!important;background:var(--surface-strong)!important;border:1px solid var(--line)!important;border-radius:16px!important;box-shadow:0 8px 24px rgba(16,24,40,.06)!important}
-body:has(.sidebar) .nav-it{min-height:44px!important;margin:3px 10px!important;padding:10px 12px!important;border-radius:10px!important;color:var(--muted)!important;font-size:.86rem!important;letter-spacing:normal!important;text-transform:none!important}
-body:has(.sidebar) .nav-it::before{display:none!important}
-body:has(.sidebar) .nav-it.on{background:var(--accent-soft)!important;color:var(--accent)!important;border:1px solid #bfdbfe!important;box-shadow:none!important}
-body:has(.sidebar) .nav-sec{padding:18px 22px 7px!important;color:#98a2b3!important;font-size:.68rem!important;letter-spacing:.08em!important;text-transform:uppercase!important}
-body:has(.sidebar) .main{margin:0!important;padding:32px 32px 72px calc(var(--nav-width) + 64px)!important;background:var(--surface)!important}
-body:has(.sidebar) .orbit-top{left:calc(var(--nav-width) + 64px)!important;right:32px!important;top:20px!important;height:56px!important;border:1px solid var(--line)!important;border-radius:12px!important;background:rgba(255,255,255,.92)!important;box-shadow:0 4px 12px rgba(16,24,40,.04)!important}
-body:has(.sidebar) .orbit-health,body:has(.sidebar) .orbit-route,body:has(.sidebar) .orbit-pulse,body:has(.sidebar) .orbit-insights article,body:has(.sidebar) .orbit-trust,body:has(.sidebar) .create-panel,body:has(.sidebar) .route-card,body:has(.sidebar) .card{border-radius:14px!important;border:1px solid var(--line)!important;box-shadow:0 4px 14px rgba(16,24,40,.04)!important}
-body:has(.sidebar) button:focus-visible,body:has(.sidebar) a:focus-visible,body:has(.sidebar) input:focus-visible,body:has(.sidebar) select:focus-visible,body:has(.sidebar) textarea:focus-visible{outline:3px solid #93c5fd!important;outline-offset:2px!important}
-@media(max-width:900px){body:has(.sidebar) .sidebar{left:12px!important;top:12px!important;bottom:12px!important;width:min(320px,calc(100vw - 24px))!important;transform:translateX(calc(-100% - 30px))!important}body:has(.sidebar) .sidebar.open{transform:none!important}body:has(.sidebar) .main{padding:88px 16px 56px!important}body:has(.sidebar) .orbit-top{left:12px!important;right:12px!important;top:12px!important}}
 </style>
 </head>
 <body>

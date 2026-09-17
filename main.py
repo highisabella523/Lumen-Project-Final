@@ -656,6 +656,7 @@ def generate_vless_link(
     sni: str | None = None,
     loc: str | None = None,
     transport_settings: object = None,
+    websocket_path: str | None = None,
 ) -> str:
     """Generate a URI only for a transport integrated with this native relay."""
     protocol, transport_settings = TRANSPORTS.validate(protocol, transport_settings)
@@ -706,7 +707,6 @@ def generate_vless_link(
         params["alpn"] = alpn_val
     query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
     return f"vless://{uuid}@{authority_host(dial_address)}:{port_val}?{query}#{quote(remark)}"
-
 
 def vless_entries_for_link(link: dict, uid: str, host: str) -> list:
     """One entry per active Multi-Location location (same UUID and quota), or a
@@ -1573,7 +1573,219 @@ async def stop_proxy_performance_refresh() -> None:
 
 
 
+@app.get("/api/diagnostics/server")
+async def diagnostics_server(_=Depends(require_auth)):
+    return server_diagnostic_identity()
 
+@app.post("/api/diagnostics/client")
+async def diagnostics_client_ingest(request: Request, _=Depends(require_auth)):
+    body = await request.json()
+    raw_events = body.get("events", []) if isinstance(body, dict) else []
+    if not isinstance(raw_events, list):
+        raise HTTPException(status_code=400, detail="events must be a list")
+    accepted = []
+    for raw in raw_events[:80]:
+        event = sanitize_client_diagnostic(raw)
+        if event is not None:
+            event["received_at"] = datetime.now(timezone.utc).isoformat()
+            event["server_boot_id"] = SERVER_BOOT_ID
+            accepted.append(event)
+    async with CLIENT_DIAGNOSTIC_LOCK:
+        CLIENT_DIAGNOSTIC_EVENTS.extend(accepted)
+    return {"accepted": len(accepted), "server": server_diagnostic_identity()}
+
+@app.get("/api/diagnostics/client")
+async def diagnostics_client_recent(_=Depends(require_auth)):
+    async with CLIENT_DIAGNOSTIC_LOCK:
+        events = list(CLIENT_DIAGNOSTIC_EVENTS)
+    return {"server": server_diagnostic_identity(), "events": events[-200:]}
+
+# ── مخزن پروکسی / تنظیم آیپی خروجی ─────────────────────────────────────────
+@app.get("/api/proxy-catalog")
+async def proxy_catalog(_=Depends(require_auth)):
+    catalog = await proxy_repository.catalog()
+    results = await current_proxy_test_results()
+    preferred = await current_preferred_proxy_by_country()
+    for proxy in catalog.get("proxies", []):
+        result = results.get(proxy.get("id"))
+        proxy["preferred"] = preferred.get(proxy.get("country_code")) == proxy.get("id")
+        proxy["performance"] = {
+            "overall_status": result.get("overall_status"),
+            "tested_at": result.get("tested_at"),
+            "total_ms": proxy_performance.average_check_ms(result, "total_ms"),
+            "score": result.get("score"),
+        } if result else None
+    catalog["proxy_test_results"] = results
+    # The country-level payload intentionally has no proxy ID. It is suitable
+    # for a country-only selector and cannot expose an internal route mapping.
+    catalog["country_options"] = [
+        {
+            "code": country["code"],
+            "country": country["country"],
+            "flag": country["flag"],
+            "available": bool(preferred.get(country["code"])),
+            "latency_ms": (
+                proxy_performance.average_check_ms(
+                    results[preferred[country["code"]]], "total_ms",
+                )
+                if preferred.get(country["code"]) in results else None
+            ),
+        }
+        for country in catalog.get("countries", [])
+    ]
+    catalog["preferred_proxy_by_country"] = preferred
+    catalog["performance"] = _performance_status()
+    return catalog
+@app.get("/api/proxy-catalog/manual-status")
+async def proxy_catalog_manual_status(_=Depends(require_auth)):
+    return proxy_repository.manual_refresh_state()
+
+@app.post("/api/proxy-catalog/refresh")
+async def proxy_catalog_refresh(_=Depends(require_auth)):
+    if not proxy_repository.manual_refresh_enabled():
+        raise HTTPException(status_code=403, detail="بررسی دستی مخزن فعال نیست")
+    return await proxy_repository.catalog(force=True)
+
+
+@app.post("/api/proxy-catalog/test")
+async def proxy_catalog_test(request: Request, _=Depends(require_auth)):
+    body = await request.json()
+    proxy_id = str((body or {}).get("proxy_id") or "").strip()
+    record = proxy_repository.get_record(proxy_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Selected proxy is not in the current catalog")
+    try:
+        raw_result = await outbound.test_proxy_record(record)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        raw_result = {
+            "proxy_id": record.id,
+            "ok": False,
+            "checks": [
+                {"target": target, "ok": False, "status": None, "error": type(exc).__name__}
+                for target in sorted(proxy_performance.REQUIRED_TARGETS)
+            ],
+        }
+    try:
+        result = await _store_proxy_test_result(record, raw_result)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    await save_state()
+    if result["overall_status"] != "healthy":
+        return JSONResponse({"ok": False, "proxy_id": record.id, "test_result": result, "receipt": None}, status_code=422)
+    return {"ok": True, "proxy_id": record.id, "test_result": result, "receipt": issue_proxy_test_receipt(record), "expires_in": PROXY_TEST_RECEIPT_TTL}
+
+
+@app.post("/api/proxy-catalog/test-all")
+async def proxy_catalog_test_all(request: Request, _=Depends(require_auth)):
+    """Start one bounded, complete-country scan; duplicate requests coalesce."""
+    body = await request.json()
+    requested_code = str((body or {}).get("country_code") or "").upper().strip()
+    if requested_code and not countries.is_valid_code(requested_code):
+        raise HTTPException(status_code=400, detail="country_code must be a valid ISO alpha-2 code")
+    if requested_code and not proxy_repository.records_for_country(requested_code):
+        raise HTTPException(status_code=404, detail="No proxies are configured for this country")
+    started = await schedule_proxy_performance_scan({requested_code} if requested_code else None)
+    status = _performance_status()
+    return JSONResponse(
+        {
+            "ok": True,
+            "started": started,
+            "deduplicated": not started,
+            "performance": status,
+        },
+        status_code=202,
+    )
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+@app.get("/stats")
+async def get_stats(_=Depends(require_auth)):
+    async with LINKS_LOCK:
+        snap = dict(LINKS)
+    return {
+        "active_connections": len(connections),
+        "total_traffic_mb": round(stats["total_bytes"] / (1024 ** 2), 2),
+        "total_requests": stats["total_requests"],
+        "total_errors": stats["total_errors"],
+        "uptime": uptime(),
+        "timestamp": datetime.now().isoformat(),
+        "hourly": dict(hourly_traffic),
+        "recent_errors": list(error_logs)[-10:],
+        "links_count": len(snap),
+        "active_links": sum(1 for l in snap.values() if is_link_allowed(l)),
+        "expired_links": sum(1 for l in snap.values() if is_link_expired(l)),
+        "subs_count": len(SUBS),
+    }
+
+# ── Activity Logs ─────────────────────────────────────────────────────────────
+@app.get("/api/activity")
+async def get_activity(_=Depends(require_auth)):
+    return {"logs": list(activity_logs)[-150:]}
+
+# ── Live connections (with IP) ────────────────────────────────────────────────
+@app.get("/api/connections")
+async def get_connections(_=Depends(require_auth)):
+    """
+    خروجی این endpoint حالا بر اساس IP گروه‌بندی شده:
+    هر آی‌پی فقط یک آیتم نمایش داده می‌شود، با جمع بایت‌های تمام سشن‌های
+    باز روی همان آی‌پی و تعداد سشن‌های فعال آن آی‌پی.
+    raw_count همچنان تعداد واقعی اتصالات باز (سشن‌های خام، مثلاً ۴۰ تا
+    اتصال هم‌زمان یک موبایل) را برمی‌گرداند.
+    """
+    async with LINKS_LOCK:
+        snap = dict(LINKS)
+
+    grouped: dict[str, dict] = {}
+    for conn_id, c in connections.items():
+        ip = c.get("ip", "نامشخص")
+        link = snap.get(c.get("uuid"))
+        label = link.get("label") if link else "نامشخص"
+        g = grouped.get(ip)
+        if g is None:
+            g = {
+                "ip": ip,
+                "sessions": 0,
+                "bytes": 0,
+                "labels": set(),
+                "transports": set(),
+                "first_connected_at": c.get("connected_at"),
+                "last_connected_at": c.get("connected_at"),
+            }
+            grouped[ip] = g
+        g["sessions"] += 1
+        g["bytes"] += c.get("bytes", 0)
+        g["labels"].add(label)
+        g["transports"].add(c.get("transport", "vless-ws"))
+        ca = c.get("connected_at")
+        if ca:
+            if not g["first_connected_at"] or ca < g["first_connected_at"]:
+                g["first_connected_at"] = ca
+            if not g["last_connected_at"] or ca > g["last_connected_at"]:
+                g["last_connected_at"] = ca
+
+    result = []
+    for ip, g in grouped.items():
+        result.append({
+            "ip": ip,
+            "sessions": g["sessions"],
+            "labels": sorted(g["labels"]),
+            "label": " · ".join(sorted(g["labels"])) if g["labels"] else "نامشخص",
+            "transports": sorted(g["transports"]),
+            "bytes": g["bytes"],
+            "bytes_fmt": fmt_bytes(g["bytes"]),
+            "connected_at": g["first_connected_at"],
+            "last_connected_at": g["last_connected_at"],
+        })
+    result.sort(key=lambda x: x.get("last_connected_at") or "", reverse=True)
+
+    return {
+        "connections": result,
+        "count": len(result),          # تعداد آی‌پی‌های ی��تا
+        "raw_count": len(connections), # تعداد کل اتصالات باز (بدون گروه‌بندی)
+    }
+
+# ── Shared link create/delete helpers (استفاده مشترک API و ربات تلگرام) ───────
 async def make_link(
     label: str = "لینک جدید",
     limit_bytes: int = 0,
@@ -1685,113 +1897,39 @@ async def remove_link(uid: str) -> str | None:
     log_activity("link", f"کانفیگ «{label}» حذف شد", "err")
     return label
 
-async def resolve_exit_selection(link: dict | None, loc_id: str = "") -> dict | None:
-    """Resolve one stable proxy ID to one endpoint; never retry or substitute."""
-    if not isinstance(link, dict):
-        return None
-    _sub, ml = multi_location_for_link(link)
-    if ml is not None:
-        locations = ml.get("locations") or []
-        if ml.get("migration_required") or len(locations) != ML_REQUIRED_LOCATIONS:
-            raise outbound.ProxyUnavailableError("multi-location requires reconfiguration to exactly two explicit proxies")
-        loc_id = str(loc_id or "").strip()
-        if not loc_id:
-            raise outbound.ProxyUnavailableError("an explicit location is required")
-        location = next((loc for loc in locations if loc.get("id") == loc_id and loc.get("active", True)), None)
-        if location is None:
-            raise outbound.ProxyUnavailableError("requested location is invalid")
-        if str(ml.get("selection_mode") or "explicit") == "country_preferred":
-            preferred = await current_preferred_proxy_by_country()
-            proxy_id = str(preferred.get(location.get("code"), "") or "")
-            if not proxy_id:
-                raise outbound.ProxyUnavailableError("country has no healthy preferred proxy")
-        else:
-            proxy_id = str(location.get("proxy_id") or "")
-        record = await proxy_repository.resolve(proxy_id)
-        if record is None:
-            raise outbound.ProxyUnavailableError("selected location proxy is unavailable")
-        if record.code != location.get("code"):
-            raise outbound.ProxyUnavailableError("selected proxy country metadata changed")
-        return {"proxy_id": record.id, "endpoint": record.endpoint, "location_id": loc_id}
-    mode = str(link.get("exit_proxy_mode") or "direct")
-    if mode == "repository":
-        proxy_id = str(link.get("proxy_id") or "")
-        record = await proxy_repository.resolve(proxy_id)
-        if record is None:
-            raise outbound.ProxyUnavailableError("managed proxy is not in the repository cache")
-        return {"proxy_id": record.id, "endpoint": record.endpoint, "location_id": None}
-    if mode == "custom":
-        try:
-            endpoint = proxy_repository.validate_url(link.get("custom_proxy"))
-            return {"proxy_id": "custom", "endpoint": endpoint, "location_id": None}
-        except ValueError as exc:
-            raise outbound.ProxyUnavailableError("custom proxy URL is invalid") from exc
-    return None
-
-async def create_sub_group(name: str = "گروه جدید", desc: str = "", password: str = "") -> tuple[str, dict]:
-    name = (name or "گروه جدید").strip()[:60]
-    desc = (desc or "").strip()[:200]
-    password = (password or "").strip()
-    sub_id = generate_uuid()
-    uuid_key = secrets.token_urlsafe(16)
-    async with SUBS_LOCK:
-        SUBS[sub_id] = {
-            "name": name,
-            "desc": desc,
-            "password_hash": hash_password(password) if password else None,
-            "uuid_key": uuid_key,
-            "created_at": datetime.now().isoformat(),
-            "link_ids": [],
-            "multi_location": _default_multi_location(),
-        }
-    await save_state(strict=True)
-    log_activity("sub", f"گروه «{name}» ساخته شد", "ok")
-    return sub_id, SUBS[sub_id]
-
-async def set_link_sub(uid: str, sub_id: str | None) -> bool:
-    """Move a link between subscription groups, or remove its group."""
+async def set_link_active(uid: str, active: bool) -> dict | None:
     async with LINKS_LOCK:
         if uid not in LINKS:
-            return False
-        old_sub = LINKS[uid].get("sub_id")
-        label = LINKS[uid].get("label", uid)
-
-    target_sub = None
-    if sub_id is not None:
-        async with SUBS_LOCK:
-            if sub_id not in SUBS:
-                return False
-            target_sub = SUBS[sub_id]
-
-    if target_sub is not None:
-        async with LINKS_LOCK:
-            link = LINKS.get(uid)
-        try:
-            validate_raw_tcp_multi_location(link, target_sub.get("multi_location"))
-        except ValueError:
-            return False
-
-    async with SUBS_LOCK:
-        if old_sub and old_sub in SUBS:
-            ids = SUBS[old_sub].get("link_ids", [])
-            if uid in ids:
-                ids.remove(uid)
-        if sub_id and sub_id in SUBS:
-            ids = SUBS[sub_id].setdefault("link_ids", [])
-            if uid not in ids:
-                ids.append(uid)
-
-    async with LINKS_LOCK:
-        if uid in LINKS:
-            LINKS[uid]["sub_id"] = sub_id
-
+            return None
+        LINKS[uid]["active"] = bool(active)
+        label = LINKS[uid]["label"]
+    log_activity("link", f"کانفیگ «{label}» {'فعال' if active else 'غیرفعال'} شد", "ok" if active else "warn")
     await save_state(strict=True)
-    log_activity(
-        "link",
-        f"کانفیگ «{label}» {'به گروه اضافه شد' if sub_id else 'از گروه خارج شد'}",
-        "info",
-    )
-    return True
+    return LINKS[uid]
+
+# ── Multi-Location (subgroup-level exit locations over one UUID/quota) ──────
+ML_REQUIRED_LOCATIONS = 2
+ML_MAX_REMARK = 60
+
+
+def _default_multi_location() -> dict:
+    return {"enabled": False, "remark_text": "", "locations": []}
+
+
+def _sanitize_remark_text(value: object) -> str:
+    """Admin-provided remark text: single line, no control chars, bounded."""
+    text = str(value or "").strip()
+    text = "".join(ch for ch in text if ch.isprintable())
+    return text[:ML_MAX_REMARK]
+
+
+def location_remark(location: dict, custom_text: str = "") -> str:
+    """"[Location] [Flag] | [Custom text]" — flag/location always generated
+    from the configured country; the admin only provides the custom part."""
+    base = f"{location.get('country', '')} {location.get('flag', '')}".strip()
+    text = _sanitize_remark_text(custom_text)
+    return f"{base} | {text}" if text else base
+
 
 async def validate_multi_location(payload: object, previous: dict | None = None, *, require_tests: bool = False) -> dict:
     """Validate exactly two country routes without allowing country fallback."""
@@ -1865,6 +2003,7 @@ async def validate_multi_location(payload: object, previous: dict | None = None,
         "failover": False,
     }
 
+
 def multi_location_for_link(link: dict | None) -> tuple[dict | None, dict | None]:
     """(sub, multi_location) when the route's group has usable Multi-Location."""
     if not isinstance(link, dict):
@@ -1877,9 +2016,172 @@ def multi_location_for_link(link: dict | None) -> tuple[dict | None, dict | None
         return sub, None
     return sub, ml
 
+
+def validate_raw_tcp_multi_location(link: dict | None, ml: dict | None) -> None:
+    """Require an explicit deployment SNI for every Raw TCP location.
+
+    This is validation only: it neither changes country/proxy mappings nor
+    resolves an endpoint. The relay still performs the exact location →
+    proxy_id lookup for every session and fails closed if it cannot do so.
+    """
+    if (
+        not isinstance(link, dict)
+        or link.get("protocol", DEFAULT_PROTOCOL) != "vless-tcp"
+        or not isinstance(ml, dict)
+        or not ml.get("enabled")
+    ):
+        return
+    if str(ml.get("selection_mode") or "explicit") != "explicit":
+        raise ValueError("Raw TCP Multi-Location requires explicit SNI-to-proxy mappings")
+    for location in ml.get("locations") or []:
+        if not location.get("active"):
+            continue
+        TRANSPORTS.endpoint(
+            "vless-tcp",
+            address=link.get("address"),
+            port=link.get("port"),
+            sni=link.get("sni"),
+            fallback_host="",
+            location_id=location.get("id"),
+        )
+
+
+async def resolve_exit_selection(link: dict | None, loc_id: str = "") -> dict | None:
+    """Resolve one stable proxy ID to one endpoint; never retry or substitute."""
+    if not isinstance(link, dict):
+        return None
+    _sub, ml = multi_location_for_link(link)
+    if ml is not None:
+        locations = ml.get("locations") or []
+        if ml.get("migration_required") or len(locations) != ML_REQUIRED_LOCATIONS:
+            raise outbound.ProxyUnavailableError("multi-location requires reconfiguration to exactly two explicit proxies")
+        loc_id = str(loc_id or "").strip()
+        if not loc_id:
+            raise outbound.ProxyUnavailableError("an explicit location is required")
+        location = next((loc for loc in locations if loc.get("id") == loc_id and loc.get("active", True)), None)
+        if location is None:
+            raise outbound.ProxyUnavailableError("requested location is invalid")
+        if str(ml.get("selection_mode") or "explicit") == "country_preferred":
+            preferred = await current_preferred_proxy_by_country()
+            proxy_id = str(preferred.get(location.get("code"), "") or "")
+            if not proxy_id:
+                raise outbound.ProxyUnavailableError("country has no healthy preferred proxy")
+        else:
+            proxy_id = str(location.get("proxy_id") or "")
+        record = await proxy_repository.resolve(proxy_id)
+        if record is None:
+            raise outbound.ProxyUnavailableError("selected location proxy is unavailable")
+        if record.code != location.get("code"):
+            raise outbound.ProxyUnavailableError("selected proxy country metadata changed")
+        return {"proxy_id": record.id, "endpoint": record.endpoint, "location_id": loc_id}
+    mode = str(link.get("exit_proxy_mode") or "direct")
+    if mode == "repository":
+        proxy_id = str(link.get("proxy_id") or "")
+        record = await proxy_repository.resolve(proxy_id)
+        if record is None:
+            raise outbound.ProxyUnavailableError("managed proxy is not in the repository cache")
+        return {"proxy_id": record.id, "endpoint": record.endpoint, "location_id": None}
+    if mode == "custom":
+        try:
+            endpoint = proxy_repository.validate_url(link.get("custom_proxy"))
+            return {"proxy_id": "custom", "endpoint": endpoint, "location_id": None}
+        except ValueError as exc:
+            raise outbound.ProxyUnavailableError("custom proxy URL is invalid") from exc
+    return None
+
+
 async def resolve_exit_endpoints(link: dict | None, loc_id: str = "") -> list:
     selection = await resolve_exit_selection(link, loc_id)
     return [selection["endpoint"]] if selection else []
+
+
+# ── Sub-group helpers (reusable — هم API وب هم ربات تلگرام از همین‌ها استفاده می‌کنن) ──
+async def create_sub_group(name: str = "گروه جدید", desc: str = "", password: str = "") -> tuple[str, dict]:
+    name = (name or "گروه جدید").strip()[:60]
+    desc = (desc or "").strip()[:200]
+    password = (password or "").strip()
+    sub_id = generate_uuid()
+    uuid_key = secrets.token_urlsafe(16)
+    async with SUBS_LOCK:
+        SUBS[sub_id] = {
+            "name": name,
+            "desc": desc,
+            "password_hash": hash_password(password) if password else None,
+            "uuid_key": uuid_key,
+            "created_at": datetime.now().isoformat(),
+            "link_ids": [],
+            "multi_location": _default_multi_location(),
+        }
+    await save_state(strict=True)
+    log_activity("sub", f"گروه «{name}» ساخته شد", "ok")
+    return sub_id, SUBS[sub_id]
+
+async def set_link_sub(uid: str, sub_id: str | None) -> bool:
+    """یک کانفیگ رو به یک گروه ساب اضافه/منتقل می‌کنه؛ با sub_id=None از گروه فعلیش خارجش می‌کنه."""
+    async with LINKS_LOCK:
+        if uid not in LINKS:
+            return False
+        old_sub = LINKS[uid].get("sub_id")
+        label = LINKS[uid].get("label", uid)
+    if sub_id is not None:
+        async with SUBS_LOCK:
+            if sub_id not in SUBS:
+                return False
+            target_sub = SUBS[sub_id]
+    else:
+        target_sub = None
+    if target_sub is not None:
+        async with LINKS_LOCK:
+            link = LINKS.get(uid)
+        try:
+            validate_raw_tcp_multi_location(link, target_sub.get("multi_location"))
+        except ValueError:
+            return False
+    async with SUBS_LOCK:
+        if old_sub and old_sub in SUBS:
+            ids = SUBS[old_sub].get("link_ids", [])
+            if uid in ids:
+                ids.remove(uid)
+        if sub_id and sub_id in SUBS:
+            ids = SUBS[sub_id].setdefault("link_ids", [])
+            if uid not in ids:
+                ids.append(uid)
+    async with LINKS_LOCK:
+        if uid in LINKS:
+            LINKS[uid]["sub_id"] = sub_id
+    await save_state(strict=True)
+    log_activity("link", f"کانفیگ «{label}» {'به گروه اضافه شد' if sub_id else 'از گروه خارج شد'}", "info")
+    return True
+
+async def remove_sub_group(sub_id: str) -> str | None:
+    async with SUBS_LOCK:
+        if sub_id not in SUBS:
+            return None
+        name = SUBS[sub_id].get("name", sub_id)
+        del SUBS[sub_id]
+    async with LINKS_LOCK:
+        for link in LINKS.values():
+            if link.get("sub_id") == sub_id:
+                link["sub_id"] = None
+    await save_state(strict=True)
+    log_activity("sub", f"گروه «{name}» حذف شد", "warn")
+    return name
+
+# ── Config endpoint choices ───────────────────────────────────────────────────
+@app.get("/api/config-endpoints")
+async def api_config_endpoints(request: Request, _=Depends(require_auth)):
+    catalog = configured_endpoint_catalog(request)
+    return {
+        "ok": True,
+        "default_address": catalog["service_host"],
+        "default_sni": catalog["service_host"],
+        "addresses": [
+            {"value": value, "kind": address_kind(value), "current": value == catalog["service_host"]}
+            for value in catalog["addresses"]
+        ],
+        "snis": catalog["snis"],
+    }
+
 
 # ── Version updates ───────────────────────────────────────────────────────────
 @app.get("/api/transports")
@@ -1889,6 +2191,7 @@ async def transport_capabilities(_=Depends(require_auth)):
         "runtime": "native FastAPI/Uvicorn VLESS WebSocket relay",
         "transports": TRANSPORTS.capabilities(),
     }
+
 
 
 @app.get("/api/update/setup")

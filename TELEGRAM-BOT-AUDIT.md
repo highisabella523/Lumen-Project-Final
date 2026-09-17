@@ -1,141 +1,108 @@
-# Lumen Telegram Bot Audit & Engineering Pass
+# Lumen Telegram Bot Audit — 2026-09-17
 
-Date: 2026-09-16
+## Scope and dependency map
 
-## Executive summary
+The active application starts in `main.py`. Its FastAPI lifespan loads JSON state, starts the optional Telegram polling task (`telegram_bot.start_bot`), and registers the protected WebSocket relay. The bot receives Telegram long-poll updates, dispatches `message` and `callback_query` payloads, persists commerce state in `${DATA_DIR}/telegram_store.json`, and provisions user-owned VLESS links through the imported `main` service functions.
 
-The current repository is a Python/FastAPI relay with an optional Telegram polling sales bot. The bot persists users, orders, gift codes, discount codes, card settings, and pending conversational state in `telegram_store.json`. The primary web application is server-rendered HTML/CSS/JavaScript from `pages.py`.
+The web panel is served from `pages.py`; it calls authenticated API endpoints in `main.py`. The current panel was based on Material 3 tokens but a right-side “Command Rail” composition. This pass restores a conventional labelled navigation hierarchy while retaining the Material 3 Expressive token system and its responsive bottom navigation.
 
-This pass removed the optional circumvention transport and its build/runtime surface, tightened the store's redemption/payment invariants, added an account view to the Telegram IA, and replaced the active dashboard navigation presentation with a clean responsive baseline.
+## Telegram architecture
 
-## Architecture and dependency map
+### Existing behavior discovered
 
-- `main.py` is the FastAPI/Uvicorn entry point and startup/shutdown coordinator.
-- `telegram_bot.py` is loaded by `main.py`; polling starts only when `TELEGRAM_BOT_TOKEN` is configured.
-- Telegram updates enter `_poll_loop`, then dispatch to `_handle_message` or `_handle_callback`.
-- User/order state is persisted atomically through a temporary file replacement at `DATA_DIR/telegram_store.json`.
-- Service ownership is checked against `LINKS[uuid].owner_telegram_id` before config, subscription, and renewal actions.
-- Service creation/renewal is delegated to the existing `main.py` link/subscription functions.
-- The dashboard and public subscription page are rendered from `pages.py`; web navigation uses an inline sidebar/drawer and page sections.
+- Entry point: FastAPI startup imports and calls `start_bot`; shutdown calls `stop_bot`.
+- Transport: Telegram Bot API long polling via `getUpdates`; no webhook implementation.
+- Commands: `/start`, `/menu`, and admin-only `/admin`. Reply keyboards are not used; all navigation uses inline keyboards.
+- User records include Telegram ID, display metadata, wallet balance, owned-service subscription group, and redeemed gifts.
+- Commerce records are JSON-persisted order snapshots. Card receipts are stored by Telegram file ID and must be approved by a configured admin ID.
+- Provisioning creates or renews a service through the existing `main.py` link/subscription functions. Ownership is recorded server-side as `owner_telegram_id`.
 
-## Telegram flows audited
+### Changes made
 
-### Entry and navigation
+- Removed the duplicated, unreachable admin gift-wizard branch. The normal conversation dispatcher now uses the single authoritative gift/promo wizard implementation.
+- Added callback-chat validation: callbacks must come from a private chat and the sender ID must match that private chat’s user ID.
+- Added callback byte-length validation and safe parsing for malformed renewal/admin-page callbacks.
+- Added a clear unknown-command response rather than silently treating a command as a menu reset.
+- Made polling restart-safe: the next Telegram update offset is persisted after every received update, preventing replay after a normal restart.
+- Kept the existing inline-keyboard information architecture: **My services**, **Buy service**, **Renew**, **Wallet**, **Connection guide**, and an admin-only store panel. Each customer detail screen retains a predictable back path; cancellation returns to the home menu.
 
-- `/start` and `/menu` clear pending conversational state and render the main menu.
-- Main menu now exposes: My services, Buy service, Renew service, Wallet, My account, Connection guide, and admin tools for authorized admins.
-- Inline keyboards are used for normal navigation; message editing is used for most menu transitions.
-- Back/Home buttons are present on menu, plan, wallet, account, guide, service, and admin views.
-- Unknown commands and unknown callbacks fall back to a safe menu rather than exposing an exception.
-- Pending state is cleared on `/start`, `/menu`, and key cancellation paths.
+### Callback and state findings
 
-### Account and service management
-
-- Account view reports the Telegram user identifier, balance, and active/total owned services.
-- Service lists are filtered by `owner_telegram_id`.
-- Config and subscription callbacks repeat the ownership check server-side.
-- Expired or exhausted services are shown as unavailable and cannot be treated as active by the existing `is_link_allowed` check.
-
-### Purchases and renewals
-
-- Plan selection only accepts an active server-side plan ID.
-- Orders are created as `draft`, then move to `awaiting_receipt`, `pending_admin`, `processing`, and `approved`.
-- Wallet payment is serialized under `_provision_lock` and is idempotent after approval.
-- Card receipt approval is admin-only and idempotent.
-- Renewal preserves remaining unused quota and extends from the later of now or the current expiry.
-- Card-payment abandonment and cancellation release reserved promotion usage.
+Order and service callbacks include only short IDs and every state-changing handler checks order/service ownership against the authenticated Telegram update sender. Admin callbacks are checked against `TELEGRAM_ADMIN_IDS`. The current payload vocabulary is compact legacy shorthand (`buy:`, `ren:`, `payw:`, etc.); it is bounded below Telegram’s 64-byte callback limit and now validated at the ingress boundary. A future non-breaking rename can introduce namespaced payloads while retaining aliases for already-sent buttons.
 
 ## Gift codes
 
-Current storage: `STORE["gift_codes"]`, persisted in `telegram_store.json`.
+### Current behavior and rules
 
-Rules verified:
+- Codes are admin-created; format is normalized server-side to uppercase `A-Z`, `0-9`, `_`, and `-`, 3–32 characters.
+- Storage: `telegram_store.json` → `gift_codes`.
+- Values are wallet credits, not direct subscriptions.
+- Codes support expiration, activation state, global usage limits, and one redemption per user.
+- Redemption checks and balance credit run under the bot state lock, so concurrent polling tasks cannot redeem the same code twice in-process.
+- Invalid, expired, duplicate, exhausted, malformed, and missing-user cases receive safe user-facing errors with no internal exception disclosure.
 
-- Format: normalized uppercase ASCII/Arabic-digit-compatible code, `3..32` characters, `[A-Z0-9_-]`.
-- Server-side validation is performed in `_redeem_gift`; client input is not trusted.
-- Codes carry amount, active flag, expiration, `max_uses`, and `used_by`.
-- Redemption is recorded in both the code's `used_by` list and the user's `gift_codes` list.
-- Per-user reuse is rejected before crediting.
-- Global usage limit is rejected before crediting.
-- Missing user, malformed code, missing code, inactive/expired code, and non-positive value are deterministic user-safe errors.
-- The mutation is performed while `_state_lock` is held, preventing duplicate in-process redemption.
-- Internal persistence exceptions are logged server-side and are not sent as raw database errors to Telegram.
+### Changes and tests
 
-Known limitation: the persistence layer is JSON/file based and therefore does not provide a cross-process transactional primitive. A multi-replica deployment must remain single-writer or move these counters to a transactional database before horizontal scaling.
+- Added bounded `redemption_audit` persistence with code, user, amount, and timestamp; it is written atomically with the wallet credit.
+- Existing atomic temp-file replacement and restrictive file permissions remain in use.
+- Regression coverage verifies valid and duplicate redemption, persistence, and the wallet result. Expiration/limit conditions are validated by the same guarded redemption path.
 
-## Discounts / promo codes
+### Limitation
 
-Current storage: `STORE["discount_codes"]`.
+JSON plus an in-process lock is safe for this single-process deployment model, not multi-replica distributed redemption. Deploying multiple application replicas against the same JSON volume remains unsupported for commerce writes.
 
-- Supports percentage and fixed discounts.
-- Codes have active/expiration state, global `max_uses`, `used_by`, order reservations, and an order list.
-- Eligibility is centralized in `_discount_valid`.
-- Calculation is centralized in `_apply_discount`.
-- Percentage values are bounded to 1..100; fixed discounts are bounded to the order base amount.
-- Payable amount is clamped so it can never be negative.
-- A code is reserved atomically when wallet/card payment starts, and released for cancellation, rejection, expiration, or failed wallet provisioning.
-- Stacking is not supported: an order stores one `discount_code`.
-- Plan-specific, first-purchase, user-specific, minimum-purchase, referral, and renewal-specific promotion rules were not present in the repository and were not invented.
+## Discounts / promos
 
-## Referral / invite / rewards audit
+The bot supports percent and fixed-amount codes. Server-side validation covers active/expiration status, global cap, per-user cap, order ownership, draft state, and excludes wallet top-ups. Calculation is centralized in `_apply_discount`; the final discount is capped so a purchase never becomes zero/negative (a 1,000-toman minimum remains). Reservations are made exactly once when a payment flow begins and released on rejected, cancelled, failed, or stale card-payment flows. Tests cover percentage calculation, wallet use, card approval idempotency, cancellation, rejection, and expiry release.
 
-No complete referral attribution, invite ledger, or reward-granting implementation was found in the current application path. Keyword hits were limited to incidental terminology/configuration rather than an executable referral subsystem. No new financial rule was invented. This is documented as a product gap, not silently represented as implemented.
+The repository does not define plan-specific, first-purchase, referral, stacking, or renewal-specific promotion rules. None were invented in this pass.
 
-## Callback architecture
+## Referral / rewards / trials
 
-The existing compact callback format was retained to avoid breaking deployed buttons and stale messages. All state-changing callbacks now route through server-side order, ownership, admin, and status checks. Sensitive data is not placed in callback payloads; payloads contain short opaque order/service identifiers. Stale callbacks return a safe alert or menu state.
-
-## Psiphon removal
-
-Removed:
-
-- `psiphon/` package and runtime manager/backend/config/state/health modules.
-- `relay_psiphon.py` and its WebSocket route.
-- Vendored `third_party/psiphon-tunnel-core/` source.
-- Docker builder stage, binary copy, and runtime environment setting.
-- Dashboard status panel, status polling, and translation/UI references.
-- Psiphon deployment documentation, transport documentation, and obsolete tests.
-- Psiphon environment/configuration ignore rules.
-
-Verification: repository-wide case-insensitive search returns no `psiphon` references.
+No referral link/code generation, attribution, reward ledger, bonus, campaign, or trial implementation was found outside generic keyword hits. No financial/reward behavior was added because the repository does not define the business rules.
 
 ## Main menu and web navigation
 
-### Telegram IA
+### Previous structure
 
-1. My services — inspect/configure owned services.
-2. Buy service — choose a plan.
-3. Renew service — choose an owned service, then a plan.
-4. Wallet — balance, top-up, and gift redemption.
-5. My account — identity and service summary.
-6. Connection guide — concise client setup instructions.
-7. Admin tools — shown only to configured admin IDs.
+The web panel had a dense right-side icon-first command rail and a mobile horizontal rail. It used Material 3 color/type tokens but did not match the requested normal application-navigation direction.
 
-### Web IA
+### New structure
 
-The dashboard keeps the existing destinations and API contracts but the active navigation layer now uses a normal system sans stack, light surfaces, clear selected state, restrained borders/shadows, accessible focus rings, and a responsive drawer/bottom dock at narrow widths. Essential destinations remain available on mobile.
+Desktop now uses a conventional left, labelled Material 3 Expressive sidebar:
 
-## Testing
+1. **Workspace:** Control room, Route studio, Subscriptions, Sub groups
+2. **Observe:** Connections, Traffic, Activity log, Errors
+3. **Tools:** Security, WebSocket test, Settings
+
+The active state uses Material 3 containers; badges remain visible; controls keep focus-visible treatment. On small screens the same destinations become a labelled, horizontally scrollable bottom navigation, preserving the reading order and avoiding a hidden drawer dependency. Keyboard activation is supported for navigation items.
+
+## Removed transport integration
+
+The removed optional transport was deleted end-to-end: Python package, relay module, WebSocket route, subscription-profile generation, lifecycle manager, proxy retest paths, API endpoints, dashboard status card/scripts, Docker builder stage/binary/configuration, documentation, notices, vendored source, and dedicated tests. The final repository scan found no remaining references outside the self-check’s split-string detector.
+
+## Verification
 
 ### PASS
 
-- Python bytecode compilation for the repository after the removal.
-- `tests/store_bot_contract.py` — gift, discount, wallet, idempotent card approval, renewal carryover, stale reservation release, admin code creation, ownership, and persistence.
-- `tests/panel_v28_contract.py` — existing dashboard/deployment contract.
-- `tests/dashboard_resilience.mjs` — dashboard request/navigation resilience.
-- Repository-wide Psiphon search — zero matches.
+- Python compilation of app, panel, bot, and tests.
+- Store bot contract: gift redemption, promo calculation/reservation release, wallet/card idempotency, provisioning, renewal, ownership, and persistence.
+- Telegram navigation contract: private-chat authorization, callback validation, state recovery, and redemption audit presence.
+- Removed-transport source scan and no-remnant regression contract.
+- Existing API route, address/SNI, countries, panel contract, protocol, state persistence, transport registry, and WS-only contracts.
+- Diff whitespace check.
 
-### BLOCKED / NOT TESTED
+### BLOCKED
 
-- Live Telegram Bot API callbacks were not run because no live bot token/webhook environment was available.
-- Live payment-provider/card settlement was not tested; the repository uses admin-reviewed card receipts.
-- Cross-process concurrent redemption was not tested against a transactional database because the current implementation is JSON/file based.
-- Browser screenshot QA against a running authenticated dashboard was not available without a running deployment/session. Static CSS/HTML compilation and contract checks passed.
-- A full legacy suite was not treated as authoritative where tests explicitly depended on the removed transport; those obsolete tests were removed rather than made to pass against deleted behavior.
+- Live FastAPI/browser rendering: the provided sandbox lacks the repository runtime dependency `aiofiles`; `python main.py` exits before binding. No live server, Telegram API, payment review, mobile browser rendering, or deployed Railway verification was claimed.
+- Telegram Bot API interaction cannot be performed safely without a real configured test bot/token and isolated payment account.
 
-## Known limitations and follow-up
+### NOT TESTED
 
-1. Move Telegram store counters/orders to SQLite/Postgres with unique constraints and transactions before multi-replica deployment.
-2. Add a real referral model only after product rules are specified.
-3. Add a translation catalog if bilingual Telegram operation becomes a requirement; the current bot is Persian-first and contains hardcoded user-facing strings.
-4. Add an authenticated browser E2E job for desktop, 390px mobile, RTL, and LTR screenshots.
+- A true concurrent multi-process gift redemption race (not supported by the JSON persistence architecture).
+- Real card transfer confirmation, real Telegram receipt download, and external deployment behavior.
+- Referral/trial/reward flows: no implementation exists to test.
+
+## Recommended follow-up
+
+Run this exact archive in a dependency-complete staging environment; then execute the full browser/mobile matrix and a dedicated Bot API test chat. Before multi-replica deployment, migrate the bot store and commerce state from JSON to a transactional database with unique redemption constraints.
